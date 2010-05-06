@@ -737,6 +737,8 @@ class P4Submit(Command):
         self.interactive = True
         self.origin = ""
         self.detectRename = False
+        if gitConfig("git-p4.detectRename") == "true":
+            self.detectRename = True
         self.verbose = False
         self.isWindows = (platform.system() == "Windows")
 
