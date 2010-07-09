@@ -8,7 +8,7 @@
 # License: MIT <http://www.opensource.org/licenses/mit-license.php>
 #
 
-import optparse, sys, os, marshal, subprocess, shelve
+import optparse, sys, os, marshal, subprocess, shelve, shlex
 import tempfile, getopt, hashlib, os.path, time, platform
 import re
 import cStringIO
@@ -106,9 +106,9 @@ def read_pipe(c, ignore_error=False):
     if verbose:
         sys.stderr.write('Reading pipe: %s\n' % c)
 
-    pipe = os.popen(c, 'rb')
-    val = pipe.read()
-    if pipe.close() and not ignore_error:
+    popen = subprocess.Popen(shlex.split(c), stdout=subprocess.PIPE)
+    val = popen.communicate()[0]
+    if popen.returncode and not ignore_error:
         die('Command failed: %s' % c)
 
     return val
@@ -724,10 +724,6 @@ class P4FileReader:
                 continue
             
 
-def escapeString(str):
-	# Escape paren and backslash characters in string
-	return re.sub("\(", "\\\(", re.sub("\)", "\\\)", re.sub(r"\\", r"\\\\", str)))
-
 class P4Submit(Command):
     def __init__(self):
         Command.__init__(self)
@@ -815,7 +811,7 @@ class P4Submit(Command):
         for line in diff:
             diff = parseDiffTreeEntry(line)
             modifier = diff['status']
-            path = escapeString(diff['src'])
+            path = diff['src']
             if modifier == "M":
                 p4_system("edit \"%s\"" % path)
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
@@ -831,7 +827,7 @@ class P4Submit(Command):
                 if path in filesToAdd:
                     filesToAdd.remove(path)
             elif modifier == "R":
-                src, dest = escapeString(diff['src']), escapeString(diff['dst'])
+                src, dest = diff['src'], diff['dst']
                 p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
                 p4_system("edit \"%s\"" % (dest))
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
@@ -888,7 +884,7 @@ class P4Submit(Command):
         # Set/clear executable bits
         for f in filesToChangeExecBit.keys():
             mode = filesToChangeExecBit[f]
-            setP4ExecBit(f, mode)
+            setP4ExecBit(os.path.join(self.clientPath, f), mode)
 
         logMessage = extractLogMessageFromGitCommit(id)
         logMessage = logMessage.strip()
