@@ -724,6 +724,10 @@ class P4FileReader:
                 continue
             
 
+def escapeString(str):
+	# Escape paren and backslash characters in string
+	return re.sub("\(", "\\\(", re.sub("\)", "\\\)", re.sub(r"\\", r"\\\\", str)))
+
 class P4Submit(Command):
     def __init__(self):
         Command.__init__(self)
@@ -811,7 +815,7 @@ class P4Submit(Command):
         for line in diff:
             diff = parseDiffTreeEntry(line)
             modifier = diff['status']
-            path = diff['src']
+            path = escapeString(diff['src'])
             if modifier == "M":
                 p4_system("edit \"%s\"" % path)
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
@@ -827,7 +831,7 @@ class P4Submit(Command):
                 if path in filesToAdd:
                     filesToAdd.remove(path)
             elif modifier == "R":
-                src, dest = diff['src'], diff['dst']
+                src, dest = escapeString(diff['src']), escapeString(diff['dst'])
                 p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
                 p4_system("edit \"%s\"" % (dest))
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
