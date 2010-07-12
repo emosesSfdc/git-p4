@@ -41,6 +41,10 @@ class LargeFileWriter:
             self.filedesc.write(bytes[:chunk])
             self.filedesc.flush()
 
+def escapeString(str):
+	# Escape paren and backslash characters in string
+	return re.sub("\(", "\\\(", re.sub("\)", "\\\)", re.sub(r"\\", r"\\\\", str)))
+
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
 
@@ -70,7 +74,7 @@ def p4_build_cmd(cmd):
     if len(client) > 0:
         real_cmd += "-c %s " % client
 
-    real_cmd += "%s" % (cmd)
+    real_cmd += "-d \"%s\" %s" % (os.getcwd(), cmd)
     if verbose:
         print real_cmd
     return real_cmd
@@ -166,7 +170,7 @@ def setP4ExecBit(file, mode):
         if p4Type[-1] == "+":
             p4Type = p4Type[0:-1]
 
-    p4_system("reopen -t %s %s" % (p4Type, file))
+    p4_system("reopen -t %s %s" % (p4Type, escapeString(file)))
 
 def getP4OpenedType(file):
     # Returns the perforce file type for the given file.
@@ -855,7 +859,7 @@ class P4Submit(Command):
                 for f in editedFiles:
                     p4_system("revert \"%s\"" % f);
                 for f in filesToAdd:
-                    system("rm %s" %f)
+                    system("rm \"%s\"" % f)
                 return
             elif response == "a":
                 os.system(applyPatchCmd)
@@ -892,6 +896,7 @@ class P4Submit(Command):
         template = self.prepareSubmitTemplate()
 
         if self.interactive:
+            chdir(self.clientPath)
             submitTemplate = self.prepareLogMessage(template, logMessage)
             if os.environ.has_key("P4DIFF"):
                 del(os.environ["P4DIFF"])
