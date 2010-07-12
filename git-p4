@@ -735,6 +735,7 @@ class P4Submit(Command):
                 optparse.make_option("--verbose", dest="verbose", action="store_true"),
                 optparse.make_option("--origin", dest="origin"),
                 optparse.make_option("-M", dest="detectRename", action="store_true"),
+                optparse.make_option("-C", dest="detectCopy", action="store_true"),
         ]
         self.description = "Submit changes from git to the perforce depot."
         self.usage += " [name of git branch to submit into perforce depot]"
@@ -743,6 +744,9 @@ class P4Submit(Command):
         self.detectRename = False
         if gitConfig("git-p4.detectRename") == "true":
             self.detectRename = True
+        self.detectCopy = False
+        if gitConfig("git-p4.detectCopy") == "true":
+            self.detectCopy = True
         self.verbose = False
         self.isWindows = (platform.system() == "Windows")
 
@@ -804,9 +808,19 @@ class P4Submit(Command):
 
         return template
 
+    def integrateFile(self, diff):
+        src, dest = diff['src'], diff['dst']
+        p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
+        p4_system("edit \"%s\"" % (dest))
+        if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
+            filesToChangeExecBit[dest] = diff['dst_mode']
+        os.unlink(dest)
+        return dest
+
     def applyCommit(self, id):
         print "Applying %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
         diffOpts = ("", "-M")[self.detectRename]
+        diffOpts = (diffOpts, "-C")[self.detectCopy]
         diff = read_pipe_lines("git diff-tree -r %s \"%s^\" \"%s\"" % (diffOpts, id, id))
         filesToAdd = set()
         filesToDelete = set()
@@ -831,15 +845,14 @@ class P4Submit(Command):
                 if path in filesToAdd:
                     filesToAdd.remove(path)
             elif modifier == "R":
-                src, dest = diff['src'], diff['dst']
-                p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
-                p4_system("edit \"%s\"" % (dest))
-                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
-                    filesToChangeExecBit[dest] = diff['dst_mode']
-                os.unlink(dest)
-                editedFiles.add(dest)
-                filesToDelete.add(src)
+                editedFiles.add(self.integrateFile(diff))
+                filesToDelete.add(diff['src'])
+            elif modifier == "C":
+                editedFiles.add(self.integrateFile(diff))
             else:
+                # the following types are unsupported:
+                # T (changed type, i.e. regular file, symlink, submodule, ...), U (unmerged),
+                # X (Unknown), B (pairing broken)
                 die("unknown modifier %s for %s" % (modifier, path))
 
         diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)

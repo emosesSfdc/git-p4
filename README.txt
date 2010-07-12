@@ -7,6 +7,7 @@ The following options can be set in the config file:
 	git-p4.host
 	git-p4.client
 	git-p4.detectRename
+	git-p4.detectCopy
 	git-p4.allowSubmit
 	git-p4.syncFromOrigin
 	git-p4.useclientspec
