@@ -695,7 +695,7 @@ class P4FileReader:
             self.printStatus(header['depotFile'])
 
             for record in self.reader:
-                if record['code'] in ( 'text', 'unicode', 'binary' ):
+                if record['code'] in ( 'text', 'unicode', 'binary', 'utf16' ):
                     # encountered subsequent data chunk. Append to file data.
                     textBuffer.write( record['data'] )
                     self.Bytes += len(record['data'])
@@ -707,12 +707,15 @@ class P4FileReader:
                     self.leftover = record
                     break
 
-            text = textBuffer.getvalue()
+            if header['type'].startswith('utf16'):
+                text = textBuffer.getvalue().encode('utf_16')
+            else:
+                text = textBuffer.getvalue()
             textBuffer.close()
 
-            if header['type'] in ('text+ko', 'unicode+ko', 'binary+ko'):
+            if header['type'] in ('text+ko', 'unicode+ko', 'binary+ko', 'utf16+ko'):
                 text = re.sub(r'(?i)\$(Id|Header):[^$]*\$',r'$\1$', text)
-            elif header['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k'):
+            elif header['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k', 'utf16+k'):
                 text = re.sub(r'\$(Id|Header|Author|Date|DateTime|Change|File|Revision):[^$\n]*\$',r'$\1$', text)
 
             file = None
@@ -1204,7 +1207,7 @@ class P4Sync(Command):
             text = ''
             # if it's not the last file and it's code type is text, unicode, or
             # binary,
-            while j < len(filedata) and filedata[j]['code'] in ('text', 'unicode', 'binary'):
+            while j < len(filedata) and filedata[j]['code'] in ('text', 'unicode', 'binary', 'utf16'):
                 # add the contents of the file to text.
                 # repeat for all other files.
                 text += filedata[j]['data']
@@ -1215,9 +1218,9 @@ class P4Sync(Command):
                 sys.stderr.write("p4 print fails with: %s\n" % repr(stat))
                 continue
 
-            if stat['type'] in ('text+ko', 'unicode+ko', 'binary+ko'):
+            if stat['type'] in ('text+ko', 'unicode+ko', 'binary+ko', 'utf16+ko'):
                 text = re.sub(r'(?i)\$(Id|Header):[^$]*\$',r'$\1$', text)
-            elif stat['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k'):
+            elif stat['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k', 'utf16+k'):
                 text = re.sub(r'\$(Id|Header|Author|Date|DateTime|Change|File|Revision):[^$\n]*\$',r'$\1$', text)
 
             contents[stat['depotFile']] = text
