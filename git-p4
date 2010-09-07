@@ -708,7 +708,12 @@ class P4FileReader:
                     break
 
             if header['type'].startswith('utf16'):
-                text = textBuffer.getvalue().encode('utf_16')
+                try:
+                    text = textBuffer.getvalue().encode('utf_16')
+                except UnicodeDecodeError:
+                    # File checked in to Perforce has an error. Try without encoding
+                    print "Corrupt UTF-16 file in Perforce: %s" % header['depotFile']
+                    text = textBuffer.getvalue()
             else:
                 text = textBuffer.getvalue()
             textBuffer.close()
