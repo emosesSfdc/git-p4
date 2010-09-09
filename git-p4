@@ -646,7 +646,7 @@ class P4FileReader:
             if includeFile and not excludeFile:
                 self.filesForCommit.append(f)
                 self.pathMap[f['path']] = f
-                if f['action'] not in ('delete', 'purge'):
+                if f['action'] not in ('delete', 'purge', 'move/delete'):
                     self.filesToRead.append(f)
 
     def printStatus(self, filename):
@@ -1185,7 +1185,7 @@ class P4Sync(Command):
 
             if includeFile and not excludeFile:
                 filesForCommit.append(f)
-                if f['action'] not in ('delete', 'purge'):
+                if f['action'] not in ('delete', 'purge', 'move/delete'):
                     filesToRead.append(f)
 
         filedata = []
@@ -1286,7 +1286,7 @@ class P4Sync(Command):
                 continue
 
             relPath = self.stripRepoPath(file['path'], branchPrefixes)
-            if file["action"] in ("delete", "purge"):
+            if file['action'] in ('delete', 'purge', 'move/delete'):
                 self.gitStream.write("D %s\n" % relPath)
             else:
                 data = file['data']
@@ -1323,16 +1323,8 @@ class P4Sync(Command):
                 includeFile = True
 
             if includeFile and not excludeFile:
-                if f['action'] in ('delete', 'purge'):
+                if f['action'] in ('delete', 'purge', 'move/delete'):
                     self.gitStream.write("D %s\n" % relPath)
-
-
-
-
-
-
-
-
 
         self.gitStream.write("\n")
 
