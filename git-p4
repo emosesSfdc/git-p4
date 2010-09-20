@@ -921,18 +921,9 @@ class P4Submit(Command):
             submitTemplate = self.prepareLogMessage(template, logMessage)
             if os.environ.has_key("P4DIFF"):
                 del(os.environ["P4DIFF"])
-            diff = p4_read_pipe("diff -du ...")
-
-            newdiff = ""
-            for newFile in filesToAdd:
-                newdiff += "==== new file ====\n"
-                newdiff += "--- /dev/null\n"
-                newdiff += "+++ %s\n" % newFile
-                f = open(newFile, "r")
-                for line in f.readlines():
-                    newdiff += "+" + line
-                f.close()
-
+            #diff = p4_read_pipe("diff -du ...")
+            #perforce's diff -du ... breaks if one of the files has been deleted. This is a p4 bug not a git-p4 bug
+            diff = "\n".join( read_pipe_lines("git diff \"%s^\" \"%s\"" % (id, id)) )
             separatorLine = "######## everything below this line is just the diff #######\n"
 
             [handle, fileName] = tempfile.mkstemp()
@@ -941,7 +932,7 @@ class P4Submit(Command):
                 submitTemplate = submitTemplate.replace("\n", "\r\n")
                 separatorLine = separatorLine.replace("\n", "\r\n")
                 newdiff = newdiff.replace("\n", "\r\n")
-            tmpFile.write(submitTemplate + separatorLine + diff + newdiff)
+            tmpFile.write(submitTemplate + separatorLine + diff)
             tmpFile.close()
             mtime = os.stat(fileName).st_mtime
             defaultEditor = "vi"
