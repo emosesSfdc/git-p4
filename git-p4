@@ -105,6 +105,21 @@ def write_pipe(c, str):
 def p4_write_pipe(c, str):
     real_cmd = p4_build_cmd(c)
     return write_pipe(real_cmd, str)
+    
+def read_write_pipe(c,  str,  ignore_error=False):
+    if verbose:
+        sys.stderr.write('Writing/Reading pipe: %s\n' % c)
+
+    popen = subprocess.Popen(shlex.split(c), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    val = popen.communicate(str)[0]
+    if popen.returncode and not ignore_error:
+        die('Command failed: %s' % c)
+
+    return val
+
+def p4_read_write_pipe(c, str, ignore_error=False):
+    real_cmd = p4_build_cmd(c)
+    return read_write_pipe(real_cmd, str,  ignore_error)
 
 def read_pipe(c, ignore_error=False):
     if verbose:
@@ -742,8 +757,8 @@ class P4Submit(Command):
         self.options = [
                 optparse.make_option("--verbose", dest="verbose", action="store_true"),
                 optparse.make_option("--origin", dest="origin"),
-                optparse.make_option("-M", dest="detectRename", action="store_true"),
-                optparse.make_option("-C", dest="detectCopy", action="store_true"),
+                optparse.make_option("-M", dest="detectRename", action="store_true", help="detect renames"),
+                optparse.make_option("-C", dest="detectCopy", action="store_true", help="detect copies"),
         ]
         self.description = "Submit changes from git to the perforce depot."
         self.usage += " [name of git branch to submit into perforce depot]"
@@ -790,11 +805,11 @@ class P4Submit(Command):
 
         return result
 
-    def prepareSubmitTemplate(self):
+    def prepareSubmitTemplate(self,  clnumber=""):
         # remove lines in the Files section that show changes to files outside the depot path we're committing into
         template = ""
         inFilesSection = False
-        for line in p4_read_pipe_lines("change -o"):
+        for line in p4_read_pipe_lines("change -o %s" % clnumber):
             if line.endswith("\r\n"):
                 line = line[:-2] + "\n"
             if inFilesSection:
@@ -816,54 +831,7 @@ class P4Submit(Command):
 
         return template
 
-    def integrateFile(self, diff):
-        src, dest = diff['src'], diff['dst']
-        p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
-        p4_system("edit \"%s\"" % (dest))
-        if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
-            filesToChangeExecBit[dest] = diff['dst_mode']
-        os.unlink(dest)
-        return dest
-
-    def applyCommit(self, id):
-        print "Applying %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
-        diffOpts = ("", "-M")[self.detectRename]
-        diffOpts = (diffOpts, "-C")[self.detectCopy]
-        diff = read_pipe_lines("git diff-tree -r %s \"%s^\" \"%s\"" % (diffOpts, id, id))
-        filesToAdd = set()
-        filesToDelete = set()
-        editedFiles = set()
-        filesToChangeExecBit = {}
-        for line in diff:
-            diff = parseDiffTreeEntry(line)
-            modifier = diff['status']
-            path = diff['src']
-            if modifier == "M":
-                p4_system("edit \"%s\"" % path)
-                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
-                    filesToChangeExecBit[path] = diff['dst_mode']
-                editedFiles.add(path)
-            elif modifier == "A":
-                filesToAdd.add(path)
-                filesToChangeExecBit[path] = diff['dst_mode']
-                if path in filesToDelete:
-                    filesToDelete.remove(path)
-            elif modifier == "D":
-                filesToDelete.add(path)
-                if path in filesToAdd:
-                    filesToAdd.remove(path)
-            elif modifier == "R":
-                editedFiles.add(self.integrateFile(diff))
-                filesToDelete.add(diff['src'])
-            elif modifier == "C":
-                editedFiles.add(self.integrateFile(diff))
-            else:
-                # the following types are unsupported:
-                # T (changed type, i.e. regular file, symlink, submodule, ...), U (unmerged),
-                # X (Unknown), B (pairing broken)
-                die("unknown modifier %s for %s" % (modifier, path))
-
-        diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)
+    def applyPatch(self, diffcmd):
         patchcmd = diffcmd + " | git apply "
         tryPatchCmd = patchcmd + "--check -"
         applyPatchCmd = patchcmd + "--check --apply -"
@@ -877,19 +845,19 @@ class P4Submit(Command):
                                      "and with .rej files / [w]rite the patch to a file (patch.txt) ")
             if response == "s":
                 print "Skipping! Good luck with the next patches..."
-                for f in editedFiles:
+                for f in self.editedFiles:
                     p4_system("revert \"%s\"" % f);
-                for f in filesToAdd:
+                for f in self.filesToAdd:
                     system("rm \"%s\"" % f)
                 return
             elif response == "a":
                 os.system(applyPatchCmd)
-                if len(filesToAdd) > 0:
+                if len(self.filesToAdd) > 0:
                     print "You may also want to call p4 add on the following files:"
-                    print " ".join(filesToAdd)
-                if len(filesToDelete):
+                    print " ".join(self.filesToAdd)
+                if len(self.filesToDelete):
                     print "The following files should be scheduled for deletion with p4 delete:"
-                    print " ".join(filesToDelete)
+                    print " ".join(self.filesToDelete)
                 die("Please resolve and submit the conflict manually and "
                     + "continue afterwards with git-p4 submit --continue")
             elif response == "w":
@@ -900,30 +868,42 @@ class P4Submit(Command):
 
         system(applyPatchCmd)
 
-        for f in filesToAdd:
-            p4_system("add \"%s\"" % f)
-        for f in filesToDelete:
-            p4_system("revert \"%s\"" % f)
-            p4_system("delete \"%s\"" % f)
+    def integrateFile(self, diff, changelist=""):
+        src, dest = diff['src'], diff['dst']
+        p4_system("integrate %s -Dt \"%s\" \"%s\"" % (changelist, src, dest))
+        p4_system("edit %s \"%s\"" % (changelist, dest))
+        if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
+            self.filesToChangeExecBit[dest] = diff['dst_mode']
+        os.unlink(dest)
+        return dest
 
+    def submitCommit(self, submitTemplate):
+        p4_write_pipe("submit -i", submitTemplate)
+
+    def revertCommit(self):
+        for f in self.editedFiles:
+            p4_system("revert \"%s\"" % f);
+        for f in self.filesToAdd:
+            p4_system("revert \"%s\"" % f);
+            system("rm %s" %f)
+
+    def setExecutableBits(self):
         # Set/clear executable bits
-        for f in filesToChangeExecBit.keys():
-            mode = filesToChangeExecBit[f]
+        for f in self.filesToChangeExecBit.keys():
+            mode = self.filesToChangeExecBit[f]
             setP4ExecBit(os.path.join(self.clientPath, f), mode)
 
-        logMessage = extractLogMessageFromGitCommit(id)
-        logMessage = logMessage.strip()
+    def manualSubmitMessage(self, fileName):
+        print ("Perforce submit template written as %s. "
+               + "Please review/edit and then use p4 submit -i < %s to submit directly!"
+               % (fileName, fileName))
 
-        template = self.prepareSubmitTemplate()
-
+    def submit(self, template, logMessage,  diff):
         if self.interactive:
             chdir(self.clientPath)
             submitTemplate = self.prepareLogMessage(template, logMessage)
             if os.environ.has_key("P4DIFF"):
                 del(os.environ["P4DIFF"])
-            #diff = p4_read_pipe("diff -du ...")
-            #perforce's diff -du ... breaks if one of the files has been deleted. This is a p4 bug not a git-p4 bug
-            diff = "\n".join( read_pipe_lines("git diff \"%s^\" \"%s\"" % (id, id)) )
             separatorLine = "######## everything below this line is just the diff #######\n"
 
             [handle, fileName] = tempfile.mkstemp()
@@ -956,13 +936,9 @@ class P4Submit(Command):
                 submitTemplate = message[:message.index(separatorLine)]
                 if self.isWindows:
                     submitTemplate = submitTemplate.replace("\r\n", "\n")
-                p4_write_pipe("submit -i", submitTemplate)
+                self.submitCommit(submitTemplate)
             else:
-                for f in editedFiles:
-                    p4_system("revert \"%s\"" % f);
-                for f in filesToAdd:
-                    p4_system("revert \"%s\"" % f);
-                    system("rm %s" %f)
+                self.revertCommit()
 
             os.remove(fileName)
         else:
@@ -970,9 +946,88 @@ class P4Submit(Command):
             file = open(fileName, "w+")
             file.write(self.prepareLogMessage(template, logMessage))
             file.close()
-            print ("Perforce submit template written as %s. "
-                   + "Please review/edit and then use p4 submit -i < %s to submit directly!"
-                   % (fileName, fileName))
+            self.manualSubmitMessage(fileName)
+
+    def addOrDeleteFiles(self, changelist=""):
+        for f in self.filesToAdd:
+            p4_system("add %s \"%s\"" % (changelist, f))
+            if f in self.editedFiles:
+                p4_system("edit %s \"%s\"" % (changelist, f))
+        for f in self.filesToDelete:
+            p4_system("revert %s \"%s\"" % (changelist, f))
+            p4_system("delete %s \"%s\"" % (changelist, f))
+
+    def addFilesToChangelist(self, id, diffOpts):
+        self.filesToAdd = set()
+        self.filesToDelete = set()
+        self.editedFiles = set()
+        self.filesToChangeExecBit = {}
+        self.getChangedFiles(diffOpts, id)
+        for file in self.editedFiles:
+            p4_system("edit \"%s\"" % file)
+
+    def getChangedFiles(self, diffOpts, id):
+        diff = read_pipe_lines("git diff-tree -r %s \"%s^\" \"%s\"" % (diffOpts, id, id))
+        for line in diff:
+            diff = parseDiffTreeEntry(line)
+            modifier = diff['status']
+            path = diff['src']
+            if modifier == "M":
+                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
+                    self.filesToChangeExecBit[path] = diff['dst_mode']
+                self.editedFiles.add(path)
+            elif modifier == "A":
+                self.filesToAdd.add(path)
+                self.filesToChangeExecBit[path] = diff['dst_mode']
+                if path in self.filesToDelete:
+                    self.filesToDelete.remove(path)
+            elif modifier == "D":
+                self.filesToDelete.add(path)
+                if path in self.filesToAdd:
+                    self.filesToAdd.remove(path)
+                if path in self.editedFiles:
+                    self.editedFiles.remove(path)
+            elif modifier == "R":
+                self.editedFiles.add(self.integrateFile(diff))
+                self.filesToDelete.add(diff['src'])
+            elif modifier == "C":
+                self.editedFiles.add(self.integrateFile(diff))
+            else:
+                # the following types are unsupported:
+                # T (changed type, i.e. regular file, symlink, submodule, ...), U (unmerged),
+                # X (Unknown), B (pairing broken)
+                die("unknown modifier %s for %s" % (modifier, path))
+
+    def applyCommit(self, id):
+        print "Applying %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
+        diffOpts = ("", "-M")[self.detectRename]
+        diffOpts = (diffOpts, "-C")[self.detectCopy]
+        self.addFilesToChangelist(id, diffOpts)
+
+        diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)
+        self.applyPatch(diffcmd)
+
+        self.addOrDeleteFiles()
+        
+        # Set/clear executable bits
+        self.setExecutableBits()
+
+        logMessage = extractLogMessageFromGitCommit(id)
+        logMessage = logMessage.strip()
+
+        #diff = p4_read_pipe("diff -du ...")
+        #perforce's diff -du ... breaks if one of the files has been deleted. This is a p4 bug not a git-p4 bug
+        diff = "\n".join( read_pipe_lines("git diff \"%s^\" \"%s\"" % (id, id)) )
+        template = self.prepareSubmitTemplate()
+        self.submit(template, logMessage, diff)
+
+    def applyCommits(self):
+        while len(self.commits) > 0:
+            commit = self.commits[0]
+            self.commits = self.commits[1:]
+            self.applyCommit(commit)
+            if not self.interactive:
+                break
 
     def run(self, args):
         if len(args) == 0:
@@ -1015,19 +1070,14 @@ class P4Submit(Command):
 
         self.check()
 
-        commits = []
+        self.commits = []
         for line in read_pipe_lines("git rev-list --no-merges %s..%s" % (self.origin, self.master)):
-            commits.append(line.strip())
-        commits.reverse()
+            self.commits.append(line.strip())
+        self.commits.reverse()
 
-        while len(commits) > 0:
-            commit = commits[0]
-            commits = commits[1:]
-            self.applyCommit(commit)
-            if not self.interactive:
-                break
-
-        if len(commits) == 0:
+        self.applyCommits()
+        
+        if len(self.commits) == 0:
             print "All changes applied!"
             chdir(self.oldWorkingDirectory)
 
@@ -2049,6 +2099,100 @@ class P4Branches(Command):
             print "%s <= %s (%s)" % (branch, ",".join(settings["depot-paths"]), settings["change"])
         return True
 
+class P4Shelve(P4Submit):
+    def __init__(self):
+        P4Submit.__init__(self)
+        self.options += [
+            optparse.make_option("-c", dest="clnumber",
+                                 action='store', default="",
+                                 help="existing changelist to use for shelving"), 
+            optparse.make_option("-d",
+                                 dest="deleteShelve", action="store_true",
+                                 help="delete previously shelved files")
+        ]
+        self.description = "Shelve changes from git to the perforce depot."
+        self.clnumber = ""
+        self.existingClNumber = ""
+        self.deleteShelve = False
+        
+    def integrateFile(self, diff, changelist=""):
+        changelist = "-c %s" % self.clnumber
+        P4Submit.integrateFile(self, diff, changelist)
+
+    def submitCommit(self, submitTemplate):
+        p4_write_pipe("shelve -r -i", submitTemplate)
+        p4_system("revert -c %s %s..." % (self.clnumber, self.depotPath))
+        print("")
+        print("Shelved files in Perforce changelist # %s" % self.clnumber)
+
+    def revertCommit(self):
+        P4Submit.revertCommit(self)
+        if self.existingClNumber == "":
+            p4_system("change -d %s" % self.clnumber)
+
+    def manualSubmitMessage(self, fileName):
+        print ("Perforce shelve template written as %s. "
+               + "Please review/edit and then use p4 shelve -c %s -i < %s to shelve directly!"
+               % (fileName, self.clnumber, fileName))
+
+    def applyCommits(self):
+        firstCommit = self.commits[0]
+        lastCommit = self.commits[len(self.commits) - 1]
+        if firstCommit == lastCommit:
+            firstCommit = lastCommit + "^"
+
+        logMessage = ""
+        for id in self.commits:
+            print "Shelving %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
+            logMessage += extractLogMessageFromGitCommit(id)
+
+        logMessage = logMessage.strip()
+
+        if self.clnumber == "":
+            # Create new changelist
+            template = self.prepareSubmitTemplate()
+            submitTemplate = self.prepareLogMessage(template, logMessage)
+            self.clnumber = p4_read_write_pipe("change -i", submitTemplate).split(' ')[1]
+        else:
+            self.existingClNumber = self.clnumber
+
+        # Add files to changelist
+        diffOpts = ("", "-M")[self.detectRename]
+        diffOpts = (diffOpts, "-C")[self.detectCopy]
+
+        self.filesToAdd = set()
+        self.filesToDelete = set()
+        self.editedFiles = set()
+        self.filesToChangeExecBit = {}
+        for id in self.commits:
+            self.getChangedFiles(diffOpts, id)
+        for file in self.editedFiles:
+            if file not in self.filesToAdd:
+                p4_system("edit -c %s \"%s\"" % (self.clnumber, file))
+
+        diffcmd = "git format-patch -k --stdout \"%s\"..\"%s\"" % (firstCommit, lastCommit)
+        self.applyPatch(diffcmd)
+
+        self.addOrDeleteFiles("-c %s" % self.clnumber)
+
+        # Set/clear executable bits
+        self.setExecutableBits()
+
+        diff = "\n".join( read_pipe_lines("git diff \"%s\" \"%s\"" % (firstCommit, lastCommit)) )
+        template = self.prepareSubmitTemplate(self.clnumber)
+        self.submit(template, logMessage, diff)
+
+    def run(self, args):
+        if self.deleteShelve:
+            if self.clnumber == "":
+                die("Fatal error: need to specify changelist number to delete shelved files")
+
+            p4_system("shelve -d -c %s" % self.clnumber)
+            p4_system("change -d %s" % self.clnumber)
+            return True
+
+        return P4Submit.run(self, args)
+
 class HelpFormatter(optparse.IndentedHelpFormatter):
     def __init__(self):
         optparse.IndentedHelpFormatter.__init__(self)
@@ -2075,7 +2219,8 @@ commands = {
     "rebase" : P4Rebase,
     "clone" : P4Clone,
     "rollback" : P4RollBack,
-    "branches" : P4Branches
+    "branches" : P4Branches, 
+    "shelve"   : P4Shelve
 }
 
 
