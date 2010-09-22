@@ -931,7 +931,6 @@ class P4Submit(Command):
             if self.isWindows:
                 submitTemplate = submitTemplate.replace("\n", "\r\n")
                 separatorLine = separatorLine.replace("\n", "\r\n")
-                newdiff = newdiff.replace("\n", "\r\n")
             tmpFile.write(submitTemplate + separatorLine + diff)
             tmpFile.close()
             mtime = os.stat(fileName).st_mtime
