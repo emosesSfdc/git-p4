@@ -831,7 +831,8 @@ class P4Submit(Command):
 
         return template
 
-    def applyPatch(self, diffcmd):
+    def applyPatch(self, id):
+        diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)
         patchcmd = diffcmd + " | git apply "
         tryPatchCmd = patchcmd + "--check -"
         applyPatchCmd = patchcmd + "--check --apply -"
@@ -845,11 +846,7 @@ class P4Submit(Command):
                                      "and with .rej files / [w]rite the patch to a file (patch.txt) ")
             if response == "s":
                 print "Skipping! Good luck with the next patches..."
-                for f in self.editedFiles:
-                    p4_system("revert \"%s\"" % f);
-                for f in self.filesToAdd:
-                    system("rm \"%s\"" % f)
-                return
+                return False
             elif response == "a":
                 os.system(applyPatchCmd)
                 if len(self.filesToAdd) > 0:
@@ -867,6 +864,7 @@ class P4Submit(Command):
                     "continue afterwards with git-p4 submit --continue")
 
         system(applyPatchCmd)
+        return True
 
     def integrateFile(self, diff, changelist=""):
         src, dest = diff['src'], diff['dst']
@@ -1004,8 +1002,8 @@ class P4Submit(Command):
         diffOpts = (diffOpts, "-C")[self.detectCopy]
         self.addFilesToChangelist(id, diffOpts)
 
-        diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)
-        self.applyPatch(diffcmd)
+        if self.applyPatch(id) == False:
+            self.revertCommit()
 
         self.addOrDeleteFiles()
         
@@ -2170,8 +2168,10 @@ class P4Shelve(P4Submit):
             if file not in self.filesToAdd:
                 p4_system("edit -c %s \"%s\"" % (self.clnumber, file))
 
-        diffcmd = "git format-patch -k --stdout \"%s\"..\"%s\"" % (firstCommit, lastCommit)
-        self.applyPatch(diffcmd)
+        for id in self.commits:
+            if self.applyPatch(id) == False:
+                self.revertCommit()
+                break
 
         self.addOrDeleteFiles("-c %s" % self.clnumber)
 
