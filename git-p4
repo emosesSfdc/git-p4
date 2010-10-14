@@ -1027,6 +1027,9 @@ class P4Submit(Command):
             if not self.interactive:
                 break
 
+    def sync(self, settings):
+        p4_system("sync ...")
+
     def run(self, args):
         if len(args) == 0:
             self.master = currentGitBranch()
@@ -1064,7 +1067,7 @@ class P4Submit(Command):
 
         chdir(self.clientPath)
         print "Syncronizing p4 checkout..."
-        p4_system("sync ...")
+        self.sync(settings)
 
         self.check()
 
@@ -1428,7 +1431,7 @@ class P4Sync(Command):
 
         s = ''
         for (key, val) in self.users.items():
-	    	s += "%s\t%s\n" % (key, val)
+            s += "%s\t%s\n" % (key, val)
 
         open(self.getUserCacheFilename(), "wb").write(s)
         self.userMapFromPerforceServer = True
@@ -2181,6 +2184,10 @@ class P4Shelve(P4Submit):
         diff = "\n".join( read_pipe_lines("git diff \"%s\" \"%s\"" % (firstCommit, lastCommit)) )
         template = self.prepareSubmitTemplate(self.clnumber)
         self.submit(template, logMessage, diff)
+
+    def sync(self, settings):
+        change = settings["change"]
+        p4_system("sync ...@%s" % change)
 
     def run(self, args):
         if self.deleteShelve:
