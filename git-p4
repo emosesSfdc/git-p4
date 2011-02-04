@@ -2046,25 +2046,42 @@ class P4Clone(P4Sync):
             self.cloneDestination = depotPaths[-1]
             depotPaths = depotPaths[:-1]
 
+        self.cloneExclude = ["/"+p for p in self.cloneExclude]
+        for p in depotPaths:
+            if not p.startswith("//"):
+                return False
+
         if (self.chunk):
             if len(depotPaths) > 1:
                 print "You can only use one path with --chunk"
                 return False
             #the :1 is to trim the extra \n
             depotPaths = p4_read_pipe("dirs -C %s*" % (depotPaths[0])).split("\n")[:-1]
+            if not self.cloneDestination:
+                self.cloneDestination = self.defaultDestination(args)
+            self.setupDirs(self.cloneDestination)
+            for path in depotPaths:
+                self.cloneDestination = self.defaultDestination([path])
+                if not self.doSync([path], None):
+                    return False
+            return True
+        else:
+            return self.doSync(depotPaths, args)
+                
+            
 
-        self.cloneExclude = ["/"+p for p in self.cloneExclude]
-        for p in depotPaths:
-            if not p.startswith("//"):
-                return False
 
+    def setupDirs(self, dest):
+        if not os.path.exists(dest):
+            os.makedirs(dest)
+        chdir(dest)
+        
+    def doSync(self, depotPaths, args):
         if not self.cloneDestination:
             self.cloneDestination = self.defaultDestination(args)
 
         print "Importing from %s into %s" % (', '.join(depotPaths), self.cloneDestination)
-        if not os.path.exists(self.cloneDestination):
-            os.makedirs(self.cloneDestination)
-        chdir(self.cloneDestination)
+        self.setupDirs(self.cloneDestination)
         system("git init")
         self.gitdir = os.getcwd() + "/.git"
         if not P4Sync.run(self, depotPaths):
