@@ -1684,6 +1684,7 @@ class P4Sync(Command):
                 sys.exit(1)
 
     def importHeadRevision(self, revision):
+        print self.depotPaths
         print "Doing initial import of %s from revision %s into %s" % (' '.join(self.depotPaths), revision, self.branch)
 
         details = { "user" : "git perforce import user", "time" : int(time.time()) }
@@ -2009,10 +2010,13 @@ class P4Clone(P4Sync):
                                  help="where to leave result of the clone"),
             optparse.make_option("-/", dest="cloneExclude",
                                  action="append", type="string",
-                                 help="exclude depot path")
+                                 help="exclude depot path"),
+            optparse.make_option("--chunk", dest="chunk", action='store_true',
+                                 help="Sync one subdirectory at a time")
         ]
         self.cloneDestination = None
         self.needsGit = False
+        self.chunk = False
 
     # This is required for the "append" cloneExclude action
     def ensure_value(self, attr, value):
@@ -2038,10 +2042,17 @@ class P4Clone(P4Sync):
             sys.exit(1)
 
         depotPaths = args
-
+            
         if not self.cloneDestination and len(depotPaths) > 1:
             self.cloneDestination = depotPaths[-1]
             depotPaths = depotPaths[:-1]
+
+        if (self.chunk):
+            if len(depotPaths) > 1:
+                print "You can only use one path with --chunk"
+                return False
+            #the :1 is to trim the extra \n
+            depotPaths = p4_read_pipe("dirs -C %s*" % (depotPaths[0])).split("\n")[:-1]
 
         self.cloneExclude = ["/"+p for p in self.cloneExclude]
         for p in depotPaths:
