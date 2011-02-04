@@ -1684,7 +1684,6 @@ class P4Sync(Command):
                 sys.exit(1)
 
     def importHeadRevision(self, revision):
-        print self.depotPaths
         print "Doing initial import of %s from revision %s into %s" % (' '.join(self.depotPaths), revision, self.branch)
 
         details = { "user" : "git perforce import user", "time" : int(time.time()) }
