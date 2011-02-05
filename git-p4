@@ -2059,12 +2059,17 @@ class P4Clone(P4Sync):
             depotPaths = p4_read_pipe("dirs -C %s*" % (depotPaths[0])).split("\n")[:-1]
             if not self.cloneDestination:
                 self.cloneDestination = self.defaultDestination(args)
+            topDir = self.cloneDestination
             self.setupDirs(self.cloneDestination)
+            
             for path in depotPaths:
                 self.cloneDestination = self.defaultDestination([path])
                 if not self.doSync([path], None):
                     return False
+                os.chdir(os.path.split(os.getcwd)[0]) #cd ..
             return True
+
+        
         else:
             return self.doSync(depotPaths, args)
                 
