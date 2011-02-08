@@ -1528,14 +1528,19 @@ class P4Sync(Command):
         newestRevision = 0
 
         fileCnt = 0
-        #for info in p4CmdList("files "
-        #                      +  ' '.join(["%s...%s"
-        #                                   % (p, revision)
-        #                                   for p in self.depotPaths])):
+        if (self.useClientSpec or gitConfig("git-p4.useClientSpec")):
+            #The [1:] strips the leading // to /
+            cmd = "files " + ' '.join(["//%s%s...%s" %
+                                       (gitConfig("git-p4.client"), p[1:], revision)
+                                       for p in self.depotPaths])
+        else:
+            cmd = "files " +  ' '.join(["%s...%s"
+                                        % (p, revision)
+                                        for p in self.depotPaths])
 
         # This just doesn't work unless you specify the p4client here
         # undoubtedly a better way to do this
-        for info in p4CmdList("files //" + self.p4Client + "/... " + revision) :
+        for info in p4CmdList(cmd) :
 
 
             if info['code'] == 'error':
