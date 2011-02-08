@@ -2066,7 +2066,7 @@ class P4Clone(P4Sync):
                 self.cloneDestination = self.defaultDestination([path])
                 if not self.doSync([path], None):
                     return False
-                os.chdir(os.path.split(os.getcwd)[0]) #cd ..
+                os.chdir(os.path.split(os.getcwd())[0]) #cd ..
             return True
 
         
