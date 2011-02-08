@@ -8,42 +8,12 @@
 # License: MIT <http://www.opensource.org/licenses/mit-license.php>
 #
 
-import optparse, sys, os, marshal, subprocess, shelve, shlex
-import tempfile, getopt, hashlib, os.path, time, platform
+import optparse, sys, os, marshal, subprocess, shelve
+import tempfile, getopt, os.path, time, platform
 import re
-import cStringIO
-
-#from sets import Set
 
 verbose = False
 
-class LargeFileWriter:
-    """Wrapper for a file, to get around a windows bug when writing large amounts of data.
-    
-    When writing to the wrapped file object, writes are broken up so that only 10MB are written at
-    a time. Otherwise, there is IO exception on Windows.
-    """
-    def __init__(self, filedesc):
-        self.read = filedesc.read
-        self.flush = filedesc.flush
-        self.close = filedesc.close
-        self.filedesc = filedesc
-
-    def write(self, bytes):
-        chunk = 10*1024*1024 # I don't know how high we can go before the bug is triggered, so we
-        #only write 10MB at a time.
-        while len(bytes) > chunk:
-            self.filedesc.write(bytes[:chunk])
-            self.filedesc.flush()
-            bytes = bytes[chunk:]
-
-        if len(bytes):    
-            self.filedesc.write(bytes[:chunk])
-            self.filedesc.flush()
-
-def escapeString(str):
-	# Escape paren and backslash characters in string
-	return re.sub("\(", "\\\(", re.sub("\)", "\\\)", re.sub(r"\\", r"\\\\", str)))
 
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
@@ -74,7 +44,7 @@ def p4_build_cmd(cmd):
     if len(client) > 0:
         real_cmd += "-c %s " % client
 
-    real_cmd += "-d \"%s\" %s" % (os.getcwd(), cmd)
+    real_cmd += "%s" % (cmd)
     if verbose:
         print real_cmd
     return real_cmd
@@ -105,29 +75,14 @@ def write_pipe(c, str):
 def p4_write_pipe(c, str):
     real_cmd = p4_build_cmd(c)
     return write_pipe(real_cmd, str)
-    
-def read_write_pipe(c,  str,  ignore_error=False):
-    if verbose:
-        sys.stderr.write('Writing/Reading pipe: %s\n' % c)
-
-    popen = subprocess.Popen(shlex.split(c), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    val = popen.communicate(str)[0]
-    if popen.returncode and not ignore_error:
-        die('Command failed: %s' % c)
-
-    return val
-
-def p4_read_write_pipe(c, str, ignore_error=False):
-    real_cmd = p4_build_cmd(c)
-    return read_write_pipe(real_cmd, str,  ignore_error)
 
 def read_pipe(c, ignore_error=False):
     if verbose:
         sys.stderr.write('Reading pipe: %s\n' % c)
 
-    popen = subprocess.Popen(shlex.split(c), stdout=subprocess.PIPE)
-    val = popen.communicate()[0]
-    if popen.returncode and not ignore_error:
+    pipe = os.popen(c, 'rb')
+    val = pipe.read()
+    if pipe.close() and not ignore_error:
         die('Command failed: %s' % c)
 
     return val
@@ -176,8 +131,7 @@ def setP4ExecBit(file, mode):
     # the execute bit setting in the passed in mode.
 
     p4Type = "+x"
-    if p4Type == '+x':
-      p4Type = 'text+x'
+
     if not isModeExec(mode):
         p4Type = getP4OpenedType(file)
         p4Type = re.sub('^([cku]?)x(.*)', '\\1\\2', p4Type)
@@ -185,7 +139,7 @@ def setP4ExecBit(file, mode):
         if p4Type[-1] == "+":
             p4Type = p4Type[0:-1]
 
-    p4_system("reopen -t %s %s" % (p4Type, escapeString(file)))
+    p4_system("reopen -t %s %s" % (p4Type, file))
 
 def getP4OpenedType(file):
     # Returns the perforce file type for the given file.
@@ -245,29 +199,7 @@ def isModeExec(mode):
 def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
-# Some commands (eg. p4 print the entire repository) can result in gigabytes of
-# data. In order to handle this without running out of memory, we have to
-# process these items in batches of maybe 100 at a time. The P4CmdReader class
-# handles this chunking of data.
-class P4CmdReader:
-    def __init__(self, cmd, stdin):
-        self.MAX_CHUNKS = 100
-        self.p4 = p4CmdListOpen(cmd, stdin)
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        try:
-            return marshal.load(self.p4.stdout)
-        except IOError, e:
-            print "IOError while reading marshaller: %s" % repr(e)
-            print e.strerror
-            raise
-        except EOFError:
-            raise StopIteration
-
-def p4CmdListOpen(cmd, stdin=None, stdin_mode='w+b'):
+def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
     cmd = p4_build_cmd("-G %s" % (cmd))
     if verbose:
         sys.stderr.write("Opening pipe: %s\n" % cmd)
@@ -282,18 +214,18 @@ def p4CmdListOpen(cmd, stdin=None, stdin_mode='w+b'):
         stdin_file.flush()
         stdin_file.seek(0)
 
-    return subprocess.Popen(cmd, shell=True,
+    p4 = subprocess.Popen(cmd, shell=True,
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
-def p4CmdList(cmd, stdin=None, stdin_mode='w+b'):
-
-    p4 = p4CmdListOpen(cmd, stdin, stdin_mode)    
     result = []
     try:
         while True:
             entry = marshal.load(p4.stdout)
-            result.append(entry)
+	    if cb is not None:
+		cb(entry)
+	    else:
+		result.append(entry)
     except EOFError:
         pass
     exitCode = p4.wait()
@@ -318,22 +250,16 @@ def p4Where(depotPath):
     outputList = p4CmdList("where %s" % depotPath)
     output = None
     for entry in outputList:
-        print repr(entry)
-        print "depotPath:" + depotPath
         if "depotFile" in entry:
             if entry["depotFile"] == depotPath:
                 output = entry
-                print "found1"
                 break
         elif "data" in entry:
             data = entry.get("data")
             space = data.find(" ")
             if data[:space] == depotPath:
                 output = entry
-                print "found2"
                 break
-        else:
-            print "not found"
     if output == None:
         return ""
     if output["code"] == "error":
@@ -514,17 +440,77 @@ def originP4BranchesExist():
 
 def p4ChangesForPaths(depotPaths, changeRange):
     assert depotPaths
-    output = p4_read_pipe_lines("changes " + ' '.join (["%s...%s" % (p, changeRange)
-                                                        for p in depotPaths]))
 
-    changes = []
-    for line in output:
-		changeNum = line.split(" ")[1]
-		changes.append(int(changeNum))
+    _debug = False
 
-    changes.sort()
-    return changes
-	
+    # Parse outout of p4 command 'p4 changes -s submitted -m NUM_REVISIONS //app/main/...'
+    # to get the revisions that we need to import to bring the local git repo up-to-date
+    # This is quite a bit faster then doing it by specifying the actual range e.g by using
+    # 'p4 changes -s submitted //app/main/...@rev,#head' and doesn't run into maxscanrows
+    # issues
+
+    # Get the last know have revision for the current (git) branch and perforce depot path
+    def getTheLastHaveRevision (revisionRange):
+
+        if _debug : print ("Specified Revision Range is '%s'" % revisionRange)
+
+        # Get the latest revision from the arguments range
+        specificRevisionPlusOne = changeRange.split(",")[0][1:]
+
+        if _debug : print ("Last Have Revision Plus One is '%s'" % specificRevisionPlusOne)
+
+        # Subtract one to get the actual revision because what we are actually passed is
+        # the 'next' revision
+        if specificRevisionPlusOne.isdigit() == False:
+            print("Could not convert revision '%s' to integer" % specificRevisionPlusOne)
+            raise
+
+        actualSpecificRevision = int(specificRevisionPlusOne) - 1
+
+        if _debug : print("Real Last Have Revision is : '%d'" % actualSpecificRevision)
+
+        return actualSpecificRevision
+
+    lastHaveRevision = getTheLastHaveRevision(changeRange)
+
+    # TODO this is particularly naive - we just manually set a large enough revision
+    # range to save looping through again - we could fix this quite easily
+
+    # This is the number of revisions to get we start out reasonably small and add 100
+    # each time until we find the revision we want
+    numberToGet = 10000
+
+    revisionsCommandString = ('changes -s submitted -m %d ' % numberToGet) + ' '.join(['%s...' % p
+                                                                                for p in depotPaths])
+
+    if _debug : print ("Using P4 Command '%s'" % revisionsCommandString)
+
+    output = p4_read_pipe_lines(revisionsCommandString);
+
+    foundOurRevision = False
+
+    # we could get smart and cache the revisons we know we have already seen (if the last
+    # checked set of revisions didn't contain the one we want) but for now just re-create
+    # the list of changes every time we need to refind out change
+    changelists = []
+
+    for idx, line in enumerate(output):
+        changeNum = int(line.split(" ")[1])
+        if changeNum == lastHaveRevision:
+            foundOurRevision = True
+            break
+        changelists.append(changeNum)
+
+    if foundOurRevision == False:
+        if _debug:
+            print("Did not found revision '%s' in the list of the last %d revisons" % (lastHaveRevision, numberToGet))
+        system.exit()
+    elif _debug:
+        print("Next revision is '%d'" % lastHaveRevision)
+
+    changelists.reverse()
+    return changelists
+
 class Command:
     def __init__(self):
         self.usage = "usage: %prog [options]"
@@ -610,166 +596,27 @@ class P4RollBack(Command):
 
         return True
 
-class P4FileReader:
-    Bytes = 0
-    LastFile = ''
-    LastBytes = 0
-    def __init__(self, files, clientSpecDirs):
-        # Initialize P4FileReader object with a list of files to read. This
-        # takes into account the clientSpecDirs passed in.
-        # Each element of files is a dictionary with the following
-        # elements:
-        #
-        # path: The complete path to the file in the depot, starting from "//"
-        # action: The action to take. Eg: 'delete' 'purge'
-
-        # list of files to commit.
-        self.filesForCommit = []
-
-        # list of files to read, filtered according to the client spec.
-        self.filesToRead = []
-
-        # mapping from path to file record.
-        self.pathMap = {}
-
-        self.filesRead = 0
-
-        self.filterClientSpec( files, clientSpecDirs )
-
-        self.reader = P4CmdReader('-x - print',
-                             stdin='\n'.join(['%s#%s' % (f['path'], f['rev'])
-                                              for f in self.filesToRead]) )
-
-        # leftover record from previous time next() was called.
-        self.leftover = None
-
-    def filterClientSpec( self, files, clientSpecDirs ):
-        # sets filesForCommit and filesToRead, filtered according to the client spec.
-        for f in files:
-            includeFile = False
-            excludeFile = False
-            if len(clientSpecDirs):
-                for val in clientSpecDirs:
-                    if f['path'].startswith(val[0]):
-                        if val[1] > 0:
-                            includeFile = True
-                        else:
-                            excludeFile = True
-            else:
-                includeFile = True
-
-            if includeFile and not excludeFile:
-                self.filesForCommit.append(f)
-                self.pathMap[f['path']] = f
-                if f['action'] not in ('delete', 'purge', 'move/delete'):
-                    self.filesToRead.append(f)
-
-    def printStatus(self, filename):
-        if filename == self.LastFile and self.Bytes - self.LastBytes < 100*1024: return
-        self.LastFile = filename
-        self.LastBytes = self.Bytes
-        if len(filename) <= 60:
-            line = filename + " " * (63-len(filename))
-        else:
-            line = "..." + filename[len(filename)-60:]
-
-        print "%s | %.1f MB (%d/%d files)\r" % (line,
-            float(self.Bytes) / (1024*1024), self.filesRead + 1,
-            len(self.filesToRead)),
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        # Return a record containing a file to commit.
-        #
-        # Perforce outputs a number of records for each file. The first one
-        # contains basic information such as the change list and filename. This
-        # is followed by a number of records containing only "code" and "data"
-        # fields, which are the file data broken apart.
-
-        # while perforce keeps giving us files we didn't ask for,
-        # (Shouldn't ever happen, but handle it anyway)
-        while 1:
-            textBuffer = cStringIO.StringIO()
-
-            if self.leftover:
-                header = self.leftover
-                self.leftover = None
-            else:
-                try:
-                    header = self.reader.next()
-                except StopIteration:
-                    print "" # newline for status information
-                    raise
-
-            # now we have the header record.
-            if not header.has_key('depotFile'):
-                die("p4 print fails with: %s\n" % repr(header))
-
-            self.printStatus(header['depotFile'])
-
-            for record in self.reader:
-                if record['code'] in ( 'text', 'unicode', 'binary', 'utf16' ):
-                    # encountered subsequent data chunk. Append to file data.
-                    textBuffer.write( record['data'] )
-                    self.Bytes += len(record['data'])
-                    del record['data']
-                    self.printStatus(header['depotFile'])
-                else:
-                    # encountered the next header.
-                    # store for processing next time.
-                    self.leftover = record
-                    break
-
-            if header['type'].startswith('utf16'):
-                try:
-                    text = textBuffer.getvalue().encode('utf_16')
-                except UnicodeDecodeError:
-                    # File checked in to Perforce has an error. Try without encoding
-                    print "Corrupt UTF-16 file in Perforce: %s" % header['depotFile']
-                    text = textBuffer.getvalue()
-            else:
-                text = textBuffer.getvalue()
-            textBuffer.close()
-
-            if header['type'] in ('text+ko', 'unicode+ko', 'binary+ko', 'utf16+ko'):
-                text = re.sub(r'(?i)\$(Id|Header):[^$]*\$',r'$\1$', text)
-            elif header['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k', 'utf16+k'):
-                text = re.sub(r'\$(Id|Header|Author|Date|DateTime|Change|File|Revision):[^$\n]*\$',r'$\1$', text)
-
-            file = None
-            filePath = header['depotFile']
-            if filePath in self.pathMap:
-                file = self.pathMap[filePath]
-                file['data'] = text
-                self.filesRead += 1
-                return file
-            else:
-                # perforce gave us something we didn't ask for?
-                print "Bad path: %s" % filePath
-                continue
-            
-
 class P4Submit(Command):
     def __init__(self):
         Command.__init__(self)
         self.options = [
                 optparse.make_option("--verbose", dest="verbose", action="store_true"),
                 optparse.make_option("--origin", dest="origin"),
-                optparse.make_option("-M", dest="detectRename", action="store_true", help="detect renames"),
-                optparse.make_option("-C", dest="detectCopy", action="store_true", help="detect copies"),
+                optparse.make_option("-M", dest="detectRename", action="store_true"),
+                # This is the root of the P4 workspace that you want to commit
+                # from, this has to match the P4CLIENT environment variable, as
+                # the name suggests this is used to commit into the perfoce
+                # workspace where you can remote.build or just p4 submit into
+                # the main SFDC depot
+                optparse.make_option("--local-root", dest="localRoot")
         ]
         self.description = "Submit changes from git to the perforce depot."
         self.usage += " [name of git branch to submit into perforce depot]"
+        # fairly self-explanatory
+        self.usage += " --local-root=\"where are this client specs files checked out\""
         self.interactive = True
         self.origin = ""
         self.detectRename = False
-        if gitConfig("git-p4.detectRename") == "true":
-            self.detectRename = True
-        self.detectCopy = False
-        if gitConfig("git-p4.detectCopy") == "true":
-            self.detectCopy = True
         self.verbose = False
         self.isWindows = (platform.system() == "Windows")
 
@@ -805,11 +652,11 @@ class P4Submit(Command):
 
         return result
 
-    def prepareSubmitTemplate(self,  clnumber=""):
+    def prepareSubmitTemplate(self):
         # remove lines in the Files section that show changes to files outside the depot path we're committing into
         template = ""
         inFilesSection = False
-        for line in p4_read_pipe_lines("change -o %s" % clnumber):
+        for line in p4_read_pipe_lines("change -o"):
             if line.endswith("\r\n"):
                 line = line[:-2] + "\n"
             if inFilesSection:
@@ -831,7 +678,44 @@ class P4Submit(Command):
 
         return template
 
-    def applyPatch(self, id):
+    def applyCommit(self, id):
+        print "Applying %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
+        diffOpts = ("", "-M")[self.detectRename]
+        diff = read_pipe_lines("git diff-tree -r %s \"%s^\" \"%s\"" % (diffOpts, id, id))
+        filesToAdd = set()
+        filesToDelete = set()
+        editedFiles = set()
+        filesToChangeExecBit = {}
+        for line in diff:
+            diff = parseDiffTreeEntry(line)
+            modifier = diff['status']
+            path = diff['src']
+            if modifier == "M":
+                p4_system("edit \"%s\"" % path)
+                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
+                    filesToChangeExecBit[path] = diff['dst_mode']
+                editedFiles.add(path)
+            elif modifier == "A":
+                filesToAdd.add(path)
+                filesToChangeExecBit[path] = diff['dst_mode']
+                if path in filesToDelete:
+                    filesToDelete.remove(path)
+            elif modifier == "D":
+                filesToDelete.add(path)
+                if path in filesToAdd:
+                    filesToAdd.remove(path)
+            elif modifier == "R":
+                src, dest = diff['src'], diff['dst']
+                p4_system("integrate -Dt \"%s\" \"%s\"" % (src, dest))
+                p4_system("edit \"%s\"" % (dest))
+                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
+                    filesToChangeExecBit[dest] = diff['dst_mode']
+                os.unlink(dest)
+                editedFiles.add(dest)
+                filesToDelete.add(src)
+            else:
+                die("unknown modifier %s for %s" % (modifier, path))
+
         diffcmd = "git format-patch -k --stdout \"%s^\"..\"%s\"" % (id, id)
         patchcmd = diffcmd + " | git apply "
         tryPatchCmd = patchcmd + "--check -"
@@ -846,15 +730,19 @@ class P4Submit(Command):
                                      "and with .rej files / [w]rite the patch to a file (patch.txt) ")
             if response == "s":
                 print "Skipping! Good luck with the next patches..."
-                return False
+                for f in editedFiles:
+                    p4_system("revert \"%s\"" % f);
+                for f in filesToAdd:
+                    system("rm %s" %f)
+                return
             elif response == "a":
                 os.system(applyPatchCmd)
-                if len(self.filesToAdd) > 0:
+                if len(filesToAdd) > 0:
                     print "You may also want to call p4 add on the following files:"
-                    print " ".join(self.filesToAdd)
-                if len(self.filesToDelete):
+                    print " ".join(filesToAdd)
+                if len(filesToDelete):
                     print "The following files should be scheduled for deletion with p4 delete:"
-                    print " ".join(self.filesToDelete)
+                    print " ".join(filesToDelete)
                 die("Please resolve and submit the conflict manually and "
                     + "continue afterwards with git-p4 submit --continue")
             elif response == "w":
@@ -864,44 +752,41 @@ class P4Submit(Command):
                     "continue afterwards with git-p4 submit --continue")
 
         system(applyPatchCmd)
-        return True
 
-    def integrateFile(self, diff, changelist=""):
-        src, dest = diff['src'], diff['dst']
-        p4_system("integrate %s -Dt \"%s\" \"%s\"" % (changelist, src, dest))
-        p4_system("edit %s \"%s\"" % (changelist, dest))
-        if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
-            self.filesToChangeExecBit[dest] = diff['dst_mode']
-        os.unlink(dest)
-        return dest
+        for f in filesToAdd:
+            p4_system("add \"%s\"" % f)
+        for f in filesToDelete:
+            p4_system("revert \"%s\"" % f)
+            p4_system("delete \"%s\"" % f)
 
-    def submitCommit(self, submitTemplate):
-        p4_write_pipe("submit -i", submitTemplate)
-
-    def revertCommit(self):
-        for f in self.editedFiles:
-            p4_system("revert \"%s\"" % f);
-        for f in self.filesToAdd:
-            p4_system("revert \"%s\"" % f);
-            system("rm %s" %f)
-
-    def setExecutableBits(self):
         # Set/clear executable bits
-        for f in self.filesToChangeExecBit.keys():
-            mode = self.filesToChangeExecBit[f]
-            setP4ExecBit(os.path.join(self.clientPath, f), mode)
+        for f in filesToChangeExecBit.keys():
+            mode = filesToChangeExecBit[f]
+            setP4ExecBit(f, mode)
 
-    def manualSubmitMessage(self, fileName):
-        print ("Perforce submit template written as %s. "
-               + "Please review/edit and then use p4 submit -i < %s to submit directly!"
-               % (fileName, fileName))
+        logMessage = extractLogMessageFromGitCommit(id)
+        logMessage = logMessage.strip()
 
-    def submit(self, template, logMessage,  diff):
+        template = self.prepareSubmitTemplate()
+
         if self.interactive:
-            chdir(self.clientPath)
             submitTemplate = self.prepareLogMessage(template, logMessage)
             if os.environ.has_key("P4DIFF"):
                 del(os.environ["P4DIFF"])
+            diff = ""
+            for editedFile in editedFiles:
+                diff += p4_read_pipe("diff -du %r" % editedFile)
+
+            newdiff = ""
+            for newFile in filesToAdd:
+                newdiff += "==== new file ====\n"
+                newdiff += "--- /dev/null\n"
+                newdiff += "+++ %s\n" % newFile
+                f = open(newFile, "r")
+                for line in f.readlines():
+                    newdiff += "+" + line
+                f.close()
+
             separatorLine = "######## everything below this line is just the diff #######\n"
 
             [handle, fileName] = tempfile.mkstemp()
@@ -909,16 +794,14 @@ class P4Submit(Command):
             if self.isWindows:
                 submitTemplate = submitTemplate.replace("\n", "\r\n")
                 separatorLine = separatorLine.replace("\n", "\r\n")
-            tmpFile.write(submitTemplate + separatorLine + diff)
+                newdiff = newdiff.replace("\n", "\r\n")
+            tmpFile.write(submitTemplate + separatorLine + diff + newdiff)
             tmpFile.close()
             mtime = os.stat(fileName).st_mtime
-            defaultEditor = "vi"
-            if platform.system() == "Windows":
-                defaultEditor = "notepad"
             if os.environ.has_key("P4EDITOR"):
                 editor = os.environ.get("P4EDITOR")
             else:
-                editor = os.environ.get("EDITOR", defaultEditor);
+                editor = read_pipe("git var GIT_EDITOR").strip()
             system(editor + " " + fileName)
 
             response = "y"
@@ -934,9 +817,19 @@ class P4Submit(Command):
                 submitTemplate = message[:message.index(separatorLine)]
                 if self.isWindows:
                     submitTemplate = submitTemplate.replace("\r\n", "\n")
-                self.submitCommit(submitTemplate)
+                # stop git-p4 submit from just committing from the p4 workspace
+                # - this is so you can remote.build before this.
+                #p4_write_pipe("submit -i", submitTemplate)
+
+                # this opens a change set with the passed in template then we
+                # can decide what to do with it remote.build
+                response = p4_write_pipe("change -i", submitTemplate);
             else:
-                self.revertCommit()
+                for f in editedFiles:
+                    p4_system("revert \"%s\"" % f);
+                for f in filesToAdd:
+                    p4_system("revert \"%s\"" % f);
+                    system("rm %s" %f)
 
             os.remove(fileName)
         else:
@@ -944,91 +837,9 @@ class P4Submit(Command):
             file = open(fileName, "w+")
             file.write(self.prepareLogMessage(template, logMessage))
             file.close()
-            self.manualSubmitMessage(fileName)
-
-    def addOrDeleteFiles(self, changelist=""):
-        for f in self.filesToAdd:
-            p4_system("add %s \"%s\"" % (changelist, f))
-            if f in self.editedFiles:
-                p4_system("edit %s \"%s\"" % (changelist, f))
-        for f in self.filesToDelete:
-            p4_system("revert %s \"%s\"" % (changelist, f))
-            p4_system("delete %s \"%s\"" % (changelist, f))
-
-    def addFilesToChangelist(self, id, diffOpts):
-        self.filesToAdd = set()
-        self.filesToDelete = set()
-        self.editedFiles = set()
-        self.filesToChangeExecBit = {}
-        self.getChangedFiles(diffOpts, id)
-        for file in self.editedFiles:
-            p4_system("edit \"%s\"" % file)
-
-    def getChangedFiles(self, diffOpts, id):
-        diff = read_pipe_lines("git diff-tree -r %s \"%s^\" \"%s\"" % (diffOpts, id, id))
-        for line in diff:
-            diff = parseDiffTreeEntry(line)
-            modifier = diff['status']
-            path = diff['src']
-            if modifier == "M":
-                if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
-                    self.filesToChangeExecBit[path] = diff['dst_mode']
-                self.editedFiles.add(path)
-            elif modifier == "A":
-                self.filesToAdd.add(path)
-                self.filesToChangeExecBit[path] = diff['dst_mode']
-                if path in self.filesToDelete:
-                    self.filesToDelete.remove(path)
-            elif modifier == "D":
-                self.filesToDelete.add(path)
-                if path in self.filesToAdd:
-                    self.filesToAdd.remove(path)
-                if path in self.editedFiles:
-                    self.editedFiles.remove(path)
-            elif modifier == "R":
-                self.editedFiles.add(self.integrateFile(diff))
-                self.filesToDelete.add(diff['src'])
-            elif modifier == "C":
-                self.editedFiles.add(self.integrateFile(diff))
-            else:
-                # the following types are unsupported:
-                # T (changed type, i.e. regular file, symlink, submodule, ...), U (unmerged),
-                # X (Unknown), B (pairing broken)
-                die("unknown modifier %s for %s" % (modifier, path))
-
-    def applyCommit(self, id):
-        print "Applying %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
-        diffOpts = ("", "-M")[self.detectRename]
-        diffOpts = (diffOpts, "-C")[self.detectCopy]
-        self.addFilesToChangelist(id, diffOpts)
-
-        if self.applyPatch(id) == False:
-            self.revertCommit()
-
-        self.addOrDeleteFiles()
-        
-        # Set/clear executable bits
-        self.setExecutableBits()
-
-        logMessage = extractLogMessageFromGitCommit(id)
-        logMessage = logMessage.strip()
-
-        #diff = p4_read_pipe("diff -du ...")
-        #perforce's diff -du ... breaks if one of the files has been deleted. This is a p4 bug not a git-p4 bug
-        diff = "\n".join( read_pipe_lines("git diff \"%s^\" \"%s\"" % (id, id)) )
-        template = self.prepareSubmitTemplate()
-        self.submit(template, logMessage, diff)
-
-    def applyCommits(self):
-        while len(self.commits) > 0:
-            commit = self.commits[0]
-            self.commits = self.commits[1:]
-            self.applyCommit(commit)
-            if not self.interactive:
-                break
-
-    def sync(self, settings):
-        p4_system("sync ...")
+            print ("Perforce submit template written as %s. "
+                   + "Please review/edit and then use p4 submit -i < %s to submit directly!"
+                   % (fileName, fileName))
 
     def run(self, args):
         if len(args) == 0:
@@ -1056,7 +867,13 @@ class P4Submit(Command):
             print "Internal error: cannot locate perforce depot path from existing branches"
             sys.exit(128)
 
-        self.clientPath = p4Where(self.depotPath)
+        # In theory git-p4 can figure out where the deotPath is located but for
+        # some reason that I dont remember this didn't work - I havn't bothered
+        # looking at it recently so this change may no longer be valid
+        #self.clientPath = p4Where(self.depotPath)
+        # So we just set it manually from the command line when you want to
+        # submit
+        self.clientPath = self.localRoot
 
         if len(self.clientPath) == 0:
             print "Error: Cannot locate perforce checkout of %s in client view" % self.depotPath
@@ -1066,19 +883,24 @@ class P4Submit(Command):
         self.oldWorkingDirectory = os.getcwd()
 
         chdir(self.clientPath)
-        print "Syncronizing p4 checkout..."
-        self.sync(settings)
+        print "Synchronizing p4 checkout..."
+        p4_system("sync ...")
 
         self.check()
 
-        self.commits = []
+        commits = []
         for line in read_pipe_lines("git rev-list --no-merges %s..%s" % (self.origin, self.master)):
-            self.commits.append(line.strip())
-        self.commits.reverse()
+            commits.append(line.strip())
+        commits.reverse()
 
-        self.applyCommits()
-        
-        if len(self.commits) == 0:
+        while len(commits) > 0:
+            commit = commits[0]
+            commits = commits[1:]
+            self.applyCommit(commit)
+            if not self.interactive:
+                break
+
+        if len(commits) == 0:
             print "All changes applied!"
             chdir(self.oldWorkingDirectory)
 
@@ -1106,7 +928,13 @@ class P4Sync(Command):
                 optparse.make_option("--keep-path", dest="keepRepoPath", action='store_true',
                                      help="Keep entire BRANCH/DIR/SUBDIR prefix during import"),
                 optparse.make_option("--use-client-spec", dest="useClientSpec", action='store_true',
-                                     help="Only sync files that are included in the Perforce Client Spec")
+                                     help="Only sync files that are included in the Perforce Client Spec"),
+                # this specifies what your p4CLient is when you intialize the
+                # git repository, I don't recall why the option above didn't
+                # work but this makes the initial initialization much more
+                # effeicient
+                optparse.make_option("--p4Client", dest="p4Client",
+                                     help="Only sync files that are included in this client, prevents issue with SFDC")
         ]
         self.description = """Imports from Perforce into a git repository.\n
     example:
@@ -1207,80 +1035,132 @@ class P4Sync(Command):
 
         return branches
 
-    ## Should move this out, doesn't use SELF.
-    def readP4Files(self, files):
+    # output one file from the P4 stream
+    # - helper for streamP4Files
+
+    def streamOneP4File(self, file, contents):
+	if file["type"] == "apple":
+	    print "\nfile %s is a strange apple file that forks. Ignoring" % \
+		file['depotFile']
+	    return
+
+        relPath = self.stripRepoPath(file['depotFile'], self.branchPrefixes)
+        if verbose:
+            sys.stderr.write("%s\n" % relPath)
+
+        mode = "644"
+        if isP4Exec(file["type"]):
+            mode = "755"
+        elif file["type"] == "symlink":
+            mode = "120000"
+            # p4 print on a symlink contains "target\n", so strip it off
+            data = ''.join(contents)
+            contents = [data[:-1]]
+
+        if self.isWindows and file["type"].endswith("text"):
+            mangled = []
+            for data in contents:
+                data = data.replace("\r\n", "\n")
+                mangled.append(data)
+            contents = mangled
+
+        if file['type'] in ('text+ko', 'unicode+ko', 'binary+ko'):
+            contents = map(lambda text: re.sub(r'(?i)\$(Id|Header):[^$]*\$',r'$\1$', text), contents)
+        elif file['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k'):
+            contents = map(lambda text: re.sub(r'\$(Id|Header|Author|Date|DateTime|Change|File|Revision):[^$\n]*\$',r'$\1$', text), contents)
+
+        self.gitStream.write("M %s inline %s\n" % (mode, relPath))
+
+        # total length...
+        length = 0
+        for d in contents:
+            length = length + len(d)
+
+        self.gitStream.write("data %d\n" % length)
+        for d in contents:
+            self.gitStream.write(d)
+        self.gitStream.write("\n")
+
+    def streamOneP4Deletion(self, file):
+        relPath = self.stripRepoPath(file['path'], self.branchPrefixes)
+        if verbose:
+            sys.stderr.write("delete %s\n" % relPath)
+        self.gitStream.write("D %s\n" % relPath)
+
+    # handle another chunk of streaming data
+    def streamP4FilesCb(self, marshalled):
+
+	if marshalled.has_key('depotFile') and self.stream_have_file_info:
+	    # start of a new file - output the old one first
+	    self.streamOneP4File(self.stream_file, self.stream_contents)
+	    self.stream_file = {}
+	    self.stream_contents = []
+	    self.stream_have_file_info = False
+
+	# pick up the new file information... for the
+	# 'data' field we need to append to our array
+	for k in marshalled.keys():
+	    if k == 'data':
+		self.stream_contents.append(marshalled['data'])
+	    else:
+		self.stream_file[k] = marshalled[k]
+
+	self.stream_have_file_info = True
+
+    # Stream directly from "p4 files" into "git fast-import"
+    def streamP4Files(self, files):
         filesForCommit = []
         filesToRead = []
+        filesToDelete = []
 
-        # filter files by clientspec. Also, don't get the contents of files
-        # which we are to delete or purge.
         for f in files:
-            includeFile = False
-            excludeFile = False
+            includeFile = True
             for val in self.clientSpecDirs:
                 if f['path'].startswith(val[0]):
-                    if val[1] > 0:
-                        includeFile = True
-                    else:
-                        excludeFile = True
+                    if val[1] <= 0:
+                        includeFile = False
+                    break
 
-            if includeFile and not excludeFile:
+            if includeFile:
                 filesForCommit.append(f)
-                if f['action'] not in ('delete', 'purge', 'move/delete'):
+                if f['action'] not in ('delete', 'move/delete', 'purge'):
                     filesToRead.append(f)
+                else:
+                    filesToDelete.append(f)
 
-        filedata = []
+        # deleted files...
+        for f in filesToDelete:
+            self.streamOneP4Deletion(f)
+
         if len(filesToRead) > 0:
-            filedata = p4CmdList('-x - print',
-                                 stdin='\n'.join(['%s#%s' % (f['path'], f['rev'])
+            self.stream_file = {}
+            self.stream_contents = []
+            self.stream_have_file_info = False
+
+	    # curry self argument
+	    def streamP4FilesCbSelf(entry):
+		self.streamP4FilesCb(entry)
+
+	    p4CmdList("-x - print",
+		'\n'.join(['%s#%s' % (f['path'], f['rev'])
                                                   for f in filesToRead]),
-                                 stdin_mode='w+')
+	        cb=streamP4FilesCbSelf)
 
-            if "p4ExitCode" in filedata[0]:
-                die("Problems executing p4. Error: [%d]."
-                    % (filedata[0]['p4ExitCode']));
 
-        # Perforce outputs a number of records for each file. The first one
-        # contains basic information such as the change list and filename. This
-        # is followed by a number of records containing only "code" and "data"
-        # fields, which are the file data broken apart.
-        j = 0;
-        contents = {}
-        # for each file,
-        while j < len(filedata):
-            stat = filedata[j]
-            j += 1
-            text = ''
-            # if it's not the last file and it's code type is text, unicode, or
-            # binary,
-            while j < len(filedata) and filedata[j]['code'] in ('text', 'unicode', 'binary', 'utf16'):
-                # add the contents of the file to text.
-                # repeat for all other files.
-                text += filedata[j]['data']
-                del filedata[j]['data']
-                j += 1
+            # used to have the following change in here, cant for the life of
+            # me remember what it did everything works fine without it though
+            #stdin='\n'.join(['%s#%s' % (f['path'], f['rev'])
+            #                                              for f in filesToRead]),
+            #                             stdin_mode='w+')
 
-            if not stat.has_key('depotFile'):
-                sys.stderr.write("p4 print fails with: %s\n" % repr(stat))
-                continue
-
-            if stat['type'] in ('text+ko', 'unicode+ko', 'binary+ko', 'utf16+ko'):
-                text = re.sub(r'(?i)\$(Id|Header):[^$]*\$',r'$\1$', text)
-            elif stat['type'] in ('text+k', 'ktext', 'kxtext', 'unicode+k', 'binary+k', 'utf16+k'):
-                text = re.sub(r'\$(Id|Header|Author|Date|DateTime|Change|File|Revision):[^$\n]*\$',r'$\1$', text)
-
-            contents[stat['depotFile']] = text
-
-        for f in filesForCommit:
-            path = f['path']
-            if contents.has_key(path):
-                f['data'] = contents[path]
-
-        return filesForCommit
+            # do the last chunk
+            if self.stream_file.has_key('depotFile'):
+                self.streamOneP4File(self.stream_file, self.stream_contents)
 
     def commit(self, details, files, branch, branchPrefixes, parent = ""):
         epoch = details["time"]
         author = details["user"]
+	self.branchPrefixes = branchPrefixes
 
         if self.verbose:
             print "commit into %s" % branch
@@ -1293,7 +1173,6 @@ class P4Sync(Command):
                 new_files.append (f)
             else:
                 sys.stderr.write("Ignoring file outside of prefix: %s\n" % path)
-        #files = self.readP4Files(new_files)
 
         self.gitStream.write("commit %s\n" % branch)
 #        gitStream.write("mark :%s\n" % details["change"])
@@ -1321,52 +1200,7 @@ class P4Sync(Command):
                 print "parent %s" % parent
             self.gitStream.write("from %s\n" % parent)
 
-        for file in P4FileReader( new_files, self.clientSpecDirs ):
-            if file["type"] == "apple":
-                print "\nfile %s is a strange apple file that forks. Ignoring!" % file['path']
-                continue
-
-            relPath = self.stripRepoPath(file['path'], branchPrefixes)
-            if file['action'] in ('delete', 'purge', 'move/delete'):
-                self.gitStream.write("D %s\n" % relPath)
-            else:
-                data = file['data']
-                del file['data']
-
-                mode = "644"
-                if isP4Exec(file["type"]):
-                    mode = "755"
-                elif file["type"] == "symlink":
-                    mode = "120000"
-                    # p4 print on a symlink contains "target\n", so strip it off
-                    data = data[:-1]
-
-                if self.isWindows and file["type"].endswith("text"):
-                    data = data.replace("\r\n", "\n")
-
-                self.gitStream.write("M %s inline %s\n" % (mode, relPath))
-                self.gitStream.write("data %s\n" % len(data))
-                self.gitStream.write(data)
-                self.gitStream.write("\n")
-
-        for f in new_files:
-            includeFile = False
-            excludeFile = False
-            relPath = self.stripRepoPath(f['path'], branchPrefixes)
-            if len(self.clientSpecDirs):
-                for val in self.clientSpecDirs:
-                    if f['path'].startswith(val[0]):
-                        if val[1] > 0:
-                            includeFile = True
-                        else:
-                            excludeFile = True
-            else:
-                includeFile = True
-
-            if includeFile and not excludeFile:
-                if f['action'] in ('delete', 'purge', 'move/delete'):
-                    self.gitStream.write("D %s\n" % relPath)
-
+        self.streamP4Files(new_files)
         self.gitStream.write("\n")
 
         change = int(details["change"])
@@ -1431,7 +1265,7 @@ class P4Sync(Command):
 
         s = ''
         for (key, val) in self.users.items():
-            s += "%s\t%s\n" % (key, val)
+	    s += "%s\t%s\n" % (key.expandtabs(1), val.expandtabs(1))
 
         open(self.getUserCacheFilename(), "wb").write(s)
         self.userMapFromPerforceServer = True
@@ -1620,11 +1454,12 @@ class P4Sync(Command):
     def importChanges(self, changes):
         cnt = 1
         for change in changes:
-            description = p4Cmd("describe %s" % change)
+            # hopefully this doesn't affect us actually pulling in the files
+            description = p4Cmd("describe -s  %s" % change)
             self.updateOptionDict(description)
 
             if not self.silent:
-                sys.stdout.write("\rImporting revision %s (%s%%)" % (change, cnt * 100 / len(changes)))
+                sys.stdout.write("\rImporting revision : '%s' (%s%%)" % (change, cnt * 100 / len(changes)))
                 sys.stdout.flush()
             cnt = cnt + 1
 
@@ -1693,10 +1528,15 @@ class P4Sync(Command):
         newestRevision = 0
 
         fileCnt = 0
-        for info in p4CmdList("files "
-                              +  ' '.join(["%s...%s"
-                                           % (p, revision)
-                                           for p in self.depotPaths])):
+        #for info in p4CmdList("files "
+        #                      +  ' '.join(["%s...%s"
+        #                                   % (p, revision)
+        #                                   for p in self.depotPaths])):
+
+        # This just doesn't work unless you specify the p4client here
+        # undoubtedly a better way to do this
+        for info in p4CmdList("files //" + self.p4Client + "/... " + revision) :
+
 
             if info['code'] == 'error':
                 sys.stderr.write("p4 returned an error: %s\n"
@@ -1720,18 +1560,14 @@ class P4Sync(Command):
 
         details["change"] = newestRevision
         self.updateOptionDict(details)
-        #try:
-        self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
-        #except IOError:
-        #   print "IO error with git fast-import. Is your git version recent enough?"
-        #    print self.gitError.read()
+        try:
+            self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
+        except IOError:
+            print "IO error with git fast-import. Is your git version recent enough?"
+            print self.gitError.read()
 
 
     def getClientSpec(self):
-        # fill in self.clientSpecDirs, with a map from folder names to an
-        # integer. If the integer is positive, the folder name maps to its
-        # length. If the integer is negative, the folder name maps to its
-        # negative length, and was explicitly excluded.
         specList = p4CmdList( "client -o" )
         temp = {}
         for entry in specList:
@@ -1910,7 +1746,7 @@ class P4Sync(Command):
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE);
         self.gitOutput = importProcess.stdout
-        self.gitStream = LargeFileWriter(importProcess.stdin)
+        self.gitStream = importProcess.stdin
         self.gitError = importProcess.stderr
 
         if revision:
@@ -2132,106 +1968,6 @@ class P4Branches(Command):
             print "%s <= %s (%s)" % (branch, ",".join(settings["depot-paths"]), settings["change"])
         return True
 
-class P4Shelve(P4Submit):
-    def __init__(self):
-        P4Submit.__init__(self)
-        self.options += [
-            optparse.make_option("-c", dest="clnumber",
-                                 action='store', default="",
-                                 help="existing changelist to use for shelving"), 
-            optparse.make_option("-d",
-                                 dest="deleteShelve", action="store_true",
-                                 help="delete previously shelved files")
-        ]
-        self.description = "Shelve changes from git to the perforce depot."
-        self.clnumber = ""
-        self.existingClNumber = ""
-        self.deleteShelve = False
-        
-    def integrateFile(self, diff, changelist=""):
-        changelist = "-c %s" % self.clnumber
-        P4Submit.integrateFile(self, diff, changelist)
-
-    def submitCommit(self, submitTemplate):
-        p4_write_pipe("shelve -r -i", submitTemplate)
-        p4_system("revert -c %s %s..." % (self.clnumber, self.depotPath))
-        print("")
-        print("Shelved files in Perforce changelist # %s" % self.clnumber)
-
-    def revertCommit(self):
-        P4Submit.revertCommit(self)
-        if self.existingClNumber == "":
-            p4_system("change -d %s" % self.clnumber)
-
-    def manualSubmitMessage(self, fileName):
-        print ("Perforce shelve template written as %s. "
-               + "Please review/edit and then use p4 shelve -c %s -i < %s to shelve directly!"
-               % (fileName, self.clnumber, fileName))
-
-    def applyCommits(self):
-        firstCommit = self.commits[0]
-        lastCommit = self.commits[len(self.commits) - 1]
-        if firstCommit == lastCommit:
-            firstCommit = lastCommit + "^"
-
-        logMessage = ""
-        for id in self.commits:
-            print "Shelving %s" % (read_pipe("git log --max-count=1 --pretty=oneline %s" % id))
-            logMessage += extractLogMessageFromGitCommit(id)
-
-        logMessage = logMessage.strip()
-
-        if self.clnumber == "":
-            # Create new changelist
-            template = self.prepareSubmitTemplate()
-            submitTemplate = self.prepareLogMessage(template, logMessage)
-            self.clnumber = p4_read_write_pipe("change -i", submitTemplate).split(' ')[1]
-        else:
-            self.existingClNumber = self.clnumber
-
-        # Add files to changelist
-        diffOpts = ("", "-M")[self.detectRename]
-        diffOpts = (diffOpts, "-C")[self.detectCopy]
-
-        self.filesToAdd = set()
-        self.filesToDelete = set()
-        self.editedFiles = set()
-        self.filesToChangeExecBit = {}
-        for id in self.commits:
-            self.getChangedFiles(diffOpts, id)
-        for file in self.editedFiles:
-            if file not in self.filesToAdd:
-                p4_system("edit -c %s \"%s\"" % (self.clnumber, file))
-
-        for id in self.commits:
-            if self.applyPatch(id) == False:
-                self.revertCommit()
-                break
-
-        self.addOrDeleteFiles("-c %s" % self.clnumber)
-
-        # Set/clear executable bits
-        self.setExecutableBits()
-
-        diff = "\n".join( read_pipe_lines("git diff \"%s\" \"%s\"" % (firstCommit, lastCommit)) )
-        template = self.prepareSubmitTemplate(self.clnumber)
-        self.submit(template, logMessage, diff)
-
-    def sync(self, settings):
-        change = settings["change"]
-        p4_system("sync ...@%s" % change)
-
-    def run(self, args):
-        if self.deleteShelve:
-            if self.clnumber == "":
-                die("Fatal error: need to specify changelist number to delete shelved files")
-
-            p4_system("shelve -d -c %s" % self.clnumber)
-            p4_system("change -d %s" % self.clnumber)
-            return True
-
-        return P4Submit.run(self, args)
-
 class HelpFormatter(optparse.IndentedHelpFormatter):
     def __init__(self):
         optparse.IndentedHelpFormatter.__init__(self)
@@ -2258,8 +1994,7 @@ commands = {
     "rebase" : P4Rebase,
     "clone" : P4Clone,
     "rollback" : P4RollBack,
-    "branches" : P4Branches, 
-    "shelve"   : P4Shelve
+    "branches" : P4Branches
 }
 
 
