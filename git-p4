@@ -105,7 +105,7 @@ def write_pipe(c, str):
 def p4_write_pipe(c, str):
     real_cmd = p4_build_cmd(c)
     return write_pipe(real_cmd, str)
-    
+
 def read_write_pipe(c,  str,  ignore_error=False):
     if verbose:
         sys.stderr.write('Writing/Reading pipe: %s\n' % c)
@@ -293,7 +293,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b'):
     try:
         while True:
             entry = marshal.load(p4.stdout)
-            result.append(entry)
+		result.append(entry)
     except EOFError:
         pass
     exitCode = p4.wait()
@@ -1137,7 +1137,7 @@ class P4Submit(Command):
         self.commits.reverse()
 
         self.applyCommits()
-        
+
         if len(self.commits) == 0:
             print "All changes applied!"
             chdir(self.oldWorkingDirectory)
@@ -1760,10 +1760,19 @@ class P4Sync(Command):
         newestRevision = 0
 
         fileCnt = 0
-        for info in p4CmdList("files "
-                              +  ' '.join(["%s...%s"
+        if (self.useClientSpec or gitConfig("git-p4.useClientSpec")):
+            #The [1:] strips the leading // to /
+            cmd = "files " + ' '.join(["//%s%s...%s" %
+                                       (gitConfig("git-p4.client"), p[1:], revision)
+                                       for p in self.depotPaths])
+        else:
+            cmd = "files " +  ' '.join(["%s...%s"
                                            % (p, revision)
-                                           for p in self.depotPaths])):
+                                        for p in self.depotPaths])
+
+        # This just doesn't work unless you specify the p4client here
+        # undoubtedly a better way to do this
+        for info in p4CmdList(cmd) :
 
             if info['code'] == 'error':
                 sys.stderr.write("p4 returned an error: %s\n"
@@ -1788,7 +1797,7 @@ class P4Sync(Command):
         details["change"] = newestRevision
         self.updateOptionDict(details)
         #try:
-        self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
+            self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
         #except IOError:
         #   print "IO error with git fast-import. Is your git version recent enough?"
         #    print self.gitError.read()
@@ -2105,7 +2114,7 @@ class P4Clone(P4Sync):
             sys.exit(1)
 
         depotPaths = args
-
+            
         if not self.cloneDestination and len(depotPaths) > 1:
             self.cloneDestination = depotPaths[-1]
             depotPaths = depotPaths[:-1]
@@ -2115,8 +2124,8 @@ class P4Clone(P4Sync):
             if not p.startswith("//"):
                 return False
 
-        if not self.cloneDestination:
-            self.cloneDestination = self.defaultDestination(args)
+            if not self.cloneDestination:
+                self.cloneDestination = self.defaultDestination(args)
 
         print "Importing from %s into %s" % (', '.join(depotPaths), self.cloneDestination)
         if not os.path.exists(self.cloneDestination):
