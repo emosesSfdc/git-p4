@@ -619,6 +619,7 @@ class P4Submit(Command):
         self.detectRename = False
         self.verbose = False
         self.isWindows = (platform.system() == "Windows")
+        self.localRoot = gitConfig("git-p4.localRoot")
 
     def check(self):
         if len(p4CmdList("opened ...")) > 0:
@@ -873,6 +874,10 @@ class P4Submit(Command):
         #self.clientPath = p4Where(self.depotPath)
         # So we just set it manually from the command line when you want to
         # submit
+        #
+        # This is because it's trying to find //app/main, but the clientspec specifies //app/main/core/... 
+        # Can probably be fixed by sycning //app/main/core on initial dl -EMM
+            
         self.clientPath = self.localRoot
 
         if len(self.clientPath) == 0:
