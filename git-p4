@@ -45,6 +45,19 @@ def escapeString(str):
 	# Escape paren and backslash characters in string
 	return re.sub("\(", "\\\(", re.sub("\)", "\\\)", re.sub(r"\\", r"\\\\", str)))
 
+def p4_decode_filename(filename):
+    """
+    p4 ascii-encodes four specific characters in its database, [@#*%],
+    and we need to decode them to get the filename right on various operations.
+    """
+    return filename.replace("%40", "@").replace("%23", "#").replace("%2A", "*").replace("%25", "%")
+
+def p4_encode_filename(filename):
+    """
+    See p4_decode_filename
+    """
+    return filename.replace("%", "%25").replace("@", "%40").replace("#", "%23").replace("*", "%2A")
+
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
 
@@ -1029,7 +1042,7 @@ class P4Submit(Command):
         for line in diff:
             diff = parseDiffTreeEntry(line)
             modifier = diff['status']
-            path = diff['src']
+            path = p4_encode_filename(diff['src'])
             if modifier == "M":
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
                     self.filesToChangeExecBit[path] = diff['dst_mode']
@@ -1260,7 +1273,7 @@ class P4Sync(Command):
             file["type"] = commit["type%s" % fnum]
             fnum = fnum + 1
 
-            relPath = self.stripRepoPath(path, self.depotPaths)
+            relPath = p4_decode_filename(self.stripRepoPath(path, self.depotPaths))
 
             for branch in self.knownBranches.keys():
 
@@ -1392,7 +1405,7 @@ class P4Sync(Command):
                 print "\nfile %s is a strange apple file that forks. Ignoring!" % file['path']
                 continue
 
-            relPath = self.stripRepoPath(file['path'], branchPrefixes)
+            relPath = p4_decode_filename(self.stripRepoPath(file['path'], branchPrefixes))
             if file['action'] in ('delete', 'purge', 'move/delete'):
                 self.gitStream.write("D %s\n" % relPath)
             else:
@@ -1418,7 +1431,7 @@ class P4Sync(Command):
         for f in new_files:
             includeFile = False
             excludeFile = False
-            relPath = self.stripRepoPath(f['path'], branchPrefixes)
+            relPath = p4_decode_filename(self.stripRepoPath(f['path'], branchPrefixes))
             if len(self.clientSpecDirs):
                 for val in self.clientSpecDirs:
                     if f['path'].startswith(val[0]):
