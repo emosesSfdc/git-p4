@@ -14,6 +14,18 @@ import re
 
 verbose = False
 
+def p4_decode_filename(filename):
+    """
+    p4 ascii-encodes four specific characters in its database, [@#*%],
+    and we need to decode them to get the filename right on various operations.
+    """
+    return filename.replace("%40", "@").replace("%23", "#").replace("%2A", "*").replace("%25", "%")
+
+def p4_encode_filename(filename):
+    """
+    See p4_decode_filename
+    """
+    return filename.replace("%", "%25").replace("@", "%40").replace("#", "%23").replace("*", "%2A")
 
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
@@ -690,7 +702,7 @@ class P4Submit(Command):
         for line in diff:
             diff = parseDiffTreeEntry(line)
             modifier = diff['status']
-            path = diff['src']
+            path = p4_encode_filename(diff['src'])
             if modifier == "M":
                 p4_system("edit \"%s\"" % path)
                 if isModeExecChanged(diff['src_mode'], diff['dst_mode']):
@@ -1049,7 +1061,7 @@ class P4Sync(Command):
 		file['depotFile']
 	    return
 
-        relPath = self.stripRepoPath(file['depotFile'], self.branchPrefixes)
+        relPath = p4_decode_filename(self.stripRepoPath(file['depotFile'], self.branchPrefixes))
         if verbose:
             sys.stderr.write("%s\n" % relPath)
 
@@ -1087,7 +1099,7 @@ class P4Sync(Command):
         self.gitStream.write("\n")
 
     def streamOneP4Deletion(self, file):
-        relPath = self.stripRepoPath(file['path'], self.branchPrefixes)
+        relPath = p4_decode_filename(self.stripRepoPath(file['path'], self.branchPrefixes))
         if verbose:
             sys.stderr.write("delete %s\n" % relPath)
         self.gitStream.write("D %s\n" % relPath)
