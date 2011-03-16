@@ -281,8 +281,8 @@ def p4Where(depotPath):
         clientPath = output.get("path")
     elif "data" in output:
         data = output.get("data")
-            lastSpace = data.rfind(" ")
-            clientPath = data[lastSpace + 1:]
+        lastSpace = data.rfind(" ")
+        clientPath = data[lastSpace + 1:]
 
     if clientPath.endswith("..."):
         clientPath = clientPath[:-3]
