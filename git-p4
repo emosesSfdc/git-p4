@@ -293,7 +293,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b'):
     try:
         while True:
             entry = marshal.load(p4.stdout)
-		result.append(entry)
+            result.append(entry)
     except EOFError:
         pass
     exitCode = p4.wait()
@@ -1797,7 +1797,7 @@ class P4Sync(Command):
         details["change"] = newestRevision
         self.updateOptionDict(details)
         #try:
-            self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
+        self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
         #except IOError:
         #   print "IO error with git fast-import. Is your git version recent enough?"
         #    print self.gitError.read()
@@ -2124,8 +2124,8 @@ class P4Clone(P4Sync):
             if not p.startswith("//"):
                 return False
 
-            if not self.cloneDestination:
-                self.cloneDestination = self.defaultDestination(args)
+        if not self.cloneDestination:
+            self.cloneDestination = self.defaultDestination(args)
 
         print "Importing from %s into %s" % (', '.join(depotPaths), self.cloneDestination)
         if not os.path.exists(self.cloneDestination):
