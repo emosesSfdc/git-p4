@@ -514,17 +514,77 @@ def originP4BranchesExist():
 
 def p4ChangesForPaths(depotPaths, changeRange):
     assert depotPaths
-    output = p4_read_pipe_lines("changes " + ' '.join (["%s...%s" % (p, changeRange)
-                                                        for p in depotPaths]))
 
-    changes = []
-    for line in output:
-		changeNum = line.split(" ")[1]
-		changes.append(int(changeNum))
+    _debug = False
 
-    changes.sort()
-    return changes
-	
+    # Parse outout of p4 command 'p4 changes -s submitted -m NUM_REVISIONS //app/main/...'
+    # to get the revisions that we need to import to bring the local git repo up-to-date
+    # This is quite a bit faster then doing it by specifying the actual range e.g by using
+    # 'p4 changes -s submitted //app/main/...@rev,#head' and doesn't run into maxscanrows
+    # issues
+
+    # Get the last know have revision for the current (git) branch and perforce depot path
+    def getTheLastHaveRevision (revisionRange):
+
+        if _debug : print ("Specified Revision Range is '%s'" % revisionRange)
+
+        # Get the latest revision from the arguments range
+        specificRevisionPlusOne = changeRange.split(",")[0][1:]
+
+        if _debug : print ("Last Have Revision Plus One is '%s'" % specificRevisionPlusOne)
+
+        # Subtract one to get the actual revision because what we are actually passed is
+        # the 'next' revision
+        if specificRevisionPlusOne.isdigit() == False:
+            print("Could not convert revision '%s' to integer" % specificRevisionPlusOne)
+            raise
+
+        actualSpecificRevision = int(specificRevisionPlusOne) - 1
+
+        if _debug : print("Real Last Have Revision is : '%d'" % actualSpecificRevision)
+
+        return actualSpecificRevision
+
+    lastHaveRevision = getTheLastHaveRevision(changeRange)
+
+    # TODO this is particularly naive - we just manually set a large enough revision
+    # range to save looping through again - we could fix this quite easily
+
+    # This is the number of revisions to get we start out reasonably small and add 100
+    # each time until we find the revision we want
+    numberToGet = 10000
+
+    revisionsCommandString = ('changes -s submitted -m %d ' % numberToGet) + ' '.join(['%s...' % p
+                                                                                for p in depotPaths])
+
+    if _debug : print ("Using P4 Command '%s'" % revisionsCommandString)
+
+    output = p4_read_pipe_lines(revisionsCommandString);
+
+    foundOurRevision = False
+
+    # we could get smart and cache the revisons we know we have already seen (if the last
+    # checked set of revisions didn't contain the one we want) but for now just re-create
+    # the list of changes every time we need to refind out change
+    changelists = []
+
+    for idx, line in enumerate(output):
+        changeNum = int(line.split(" ")[1])
+        if changeNum == lastHaveRevision:
+            foundOurRevision = True
+            break
+        changelists.append(changeNum)
+
+    if foundOurRevision == False:
+        if _debug:
+            print("Did not found revision '%s' in the list of the last %d revisons" % (lastHaveRevision, numberToGet))
+        system.exit()
+    elif _debug:
+        print("Next revision is '%d'" % lastHaveRevision)
+
+    changelists.reverse()
+    return changelists
+
 class Command:
     def __init__(self):
         self.usage = "usage: %prog [options]"
@@ -1106,7 +1166,13 @@ class P4Sync(Command):
                 optparse.make_option("--keep-path", dest="keepRepoPath", action='store_true',
                                      help="Keep entire BRANCH/DIR/SUBDIR prefix during import"),
                 optparse.make_option("--use-client-spec", dest="useClientSpec", action='store_true',
-                                     help="Only sync files that are included in the Perforce Client Spec")
+                                     help="Only sync files that are included in the Perforce Client Spec"),
+                # this specifies what your p4CLient is when you intialize the
+                # git repository, I don't recall why the option above didn't
+                # work but this makes the initial initialization much more
+                # effeicient
+                optparse.make_option("--p4Client", dest="p4Client",
+                                     help="Only sync files that are included in this client, prevents issue with SFDC")
         ]
         self.description = """Imports from Perforce into a git repository.\n
     example:
@@ -1620,11 +1686,12 @@ class P4Sync(Command):
     def importChanges(self, changes):
         cnt = 1
         for change in changes:
-            description = p4Cmd("describe %s" % change)
+            # hopefully this doesn't affect us actually pulling in the files
+            description = p4Cmd("describe -s  %s" % change)
             self.updateOptionDict(description)
 
             if not self.silent:
-                sys.stdout.write("\rImporting revision %s (%s%%)" % (change, cnt * 100 / len(changes)))
+                sys.stdout.write("\rImporting revision : '%s' (%s%%)" % (change, cnt * 100 / len(changes)))
                 sys.stdout.flush()
             cnt = cnt + 1
 
