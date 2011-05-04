@@ -1774,9 +1774,8 @@ class P4Sync(Command):
 
         fileCnt = 0
         if (self.useClientSpec or gitConfig("git-p4.useclientspec")):
-            #The [1:] strips the leading // to /
-            cmd = "files " + ' '.join(["//%s%s...%s" %
-                                       (gitConfig("git-p4.client"), p[1:], revision)
+            cmd = "files " +  ' '.join(["%s...%s"
+                                           % (p4Where(p), revision)
                                        for p in self.depotPaths])
         else:
             cmd = "files " +  ' '.join(["%s...%s"
