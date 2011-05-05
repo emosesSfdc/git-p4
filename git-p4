@@ -2139,10 +2139,13 @@ class P4Clone(P4Sync):
                                  help="where to leave result of the clone"),
             optparse.make_option("-/", dest="cloneExclude",
                                  action="append", type="string",
-                                 help="exclude depot path")
+                                 help="exclude depot path"),
+            optparse.make_option("--skipPlusW", dest="skipPlusW", action="store_true",
+                                 help="Mark all text+w files as skip-worktree")
         ]
         self.cloneDestination = None
         self.needsGit = False
+        self.skipPlusW = False or gitConfig('git-p4.skipPlusW')
 
     # This is required for the "append" cloneExclude action
     def ensure_value(self, attr, value):
@@ -2200,6 +2203,28 @@ class P4Clone(P4Sync):
             else:
                 print "Could not detect main branch. No checkout/master branch created."
 
+        #Find any files marked text+w in p4, and mark them as skip-worktree
+        if self.skipPlusW:
+            plusWpaths = []
+            for path in depotPaths:
+                plusWFiles = p4CmdList('fstat -Rh -T "depotFile" -F "headType=text+w" %s' % path)
+                for f in plusWFiles:
+                    if f['code'] == 'error':
+                        sys.stderr.write('Error getting text+w files: %s' % f['data'])
+                        sys.exit(1)
+                    plusWpaths.append(self.stripRepoPath(f['depotFile'], self.depotPaths))
+                    
+            updateIndexProc = subprocess.Popen(["git", "update-index", "--skip-worktree", "--stdin"],
+                                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            for p in plusWpaths:
+                updateIndexProc.stdin.write(p)
+                updateIndexProc.stdin.write('\n')
+            updateIndexProc.stdin.close()
+            if updateIndexProc.wait() != 0:
+                die('update-index failed %s' % updateIndexProc.stderr.read())
+            updateIndexProc.stderr.close()     
+                
         return True
 
 class P4Branches(Command):
