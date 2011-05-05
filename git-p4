@@ -826,6 +826,7 @@ class P4Submit(Command):
                 optparse.make_option("--origin", dest="origin"),
                 optparse.make_option("-M", dest="detectRename", action="store_true", help="detect renames"),
                 optparse.make_option("-C", dest="detectCopy", action="store_true", help="detect copies"),
+                optparse.make_option("--changelistOnly", dest="changelistOnly", action="store_true", help="Only open the changelist, don't actually submit to perforce")
         ]
         self.description = "Submit changes from git to the perforce depot."
         self.usage += " [name of git branch to submit into perforce depot]"
@@ -837,6 +838,7 @@ class P4Submit(Command):
         self.detectCopy = False
         if gitConfig("git-p4.detectCopy") == "true":
             self.detectCopy = True
+        self.changelistOnly = False or (gitConfig("git-p4.changelistOnly") == "true")
         self.verbose = False
         self.isWindows = (platform.system() == "Windows")
 
@@ -943,7 +945,10 @@ class P4Submit(Command):
         return dest
 
     def submitCommit(self, submitTemplate):
-        p4_write_pipe("submit -i", submitTemplate)
+        if self.changelistOnly:
+            p4_write_pipe("change -i", submitTemplate)
+        else: 
+            p4_write_pipe("submit -i", submitTemplate)
 
     def revertCommit(self):
         for f in self.editedFiles:
