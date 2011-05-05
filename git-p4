@@ -1218,10 +1218,11 @@ class P4Sync(Command):
         if gitConfig("git-p4.syncFromOrigin") == "false":
             self.syncWithOrigin = False
 
-    def extractFilesFromCommit(self, commit):
+    def extractFilesFromCommit(self, commit, branchPrefixes = []):
         self.cloneExclude = [re.sub(r"\.\.\.$", "", path)
                              for path in self.cloneExclude]
         files = []
+        preCommitFiles = []
         fnum = 0
         while commit.has_key("depotFile%s" % fnum):
             path =  commit["depotFile%s" % fnum]
@@ -1241,8 +1242,38 @@ class P4Sync(Command):
             file["rev"] = commit["rev%s" % fnum]
             file["action"] = commit["action%s" % fnum]
             file["type"] = commit["type%s" % fnum]
-            files.append(file)
+
+            #if you find a .p4ignore, pretend it wasn't found, because
+            #we're going to read it in separately here
+            if file["path"].endswith("/.p4ignore") \
+                    and file['action'] not in ('delete', 'purge', 'move/delete'):
+                preCommitFiles.append(file)
+            else:
+                files.append(file)
             fnum = fnum + 1
+
+        for file in P4FileReader(preCommitFiles, branchPrefixes):
+            fileInfo = self.readOneP4File(file, branchPrefixes)
+            if fileInfo == None:
+                continue
+            
+            dirname = os.path.dirname(fileInfo['relPath'])
+
+            if not os.path.exists(dirname):
+                os.makedirs(dirname)
+
+            f = open(fileInfo['relPath'], 'w')
+            f.write(fileInfo['data'])
+            f.close()
+            os.chmod(fileInfo['relPath'], int(fileInfo['mode'], 8))
+
+            if not os.path.exists(os.path.join(dirname, ".gitignore")):
+                cwd = os.getcwd()
+                #symlink all p4ignores to gitignore
+                os.chdir(dirname)
+                os.symlink(".p4ignore", ".gitignore")
+                os.chdir(cwd)
+                
         return files
 
     def stripRepoPath(self, path, prefixes):
@@ -1357,6 +1388,30 @@ class P4Sync(Command):
 
         return filesForCommit
 
+    def readOneP4File(self, file, branchPrefixes):
+        if file["type"] == "apple":
+            print "\nfile %s is a strange apple file that forks. Ignoring!" % file['path']
+            return None
+
+        relPath = p4_decode_filename(self.stripRepoPath(file['path'], branchPrefixes))
+        data = file['data']
+        del file['data']
+            
+        mode = "644"
+        if isP4Exec(file["type"]):
+            mode = "755"
+        elif file["type"] == "symlink":
+            mode = "120000"
+            # p4 print on a symlink contains "target\n", so strip it off
+            data = data[:-1]
+
+        if self.isWindows and file["type"].endswith("text"):
+            data = data.replace("\r\n", "\n")
+
+        return {"mode" : mode, "relPath" : relPath, "data" : data}
+                
+
+
     def commit(self, details, files, branch, branchPrefixes, parent = ""):
         epoch = details["time"]
         author = details["user"]
@@ -1401,31 +1456,16 @@ class P4Sync(Command):
             self.gitStream.write("from %s\n" % parent)
 
         for file in P4FileReader( new_files, self.clientSpecDirs ):
-            if file["type"] == "apple":
-                print "\nfile %s is a strange apple file that forks. Ignoring!" % file['path']
+            fileInfo = self.readOneP4File(file, branchPrefixes)
+            if fileInfo == None:
                 continue
-
-            relPath = p4_decode_filename(self.stripRepoPath(file['path'], branchPrefixes))
+            
             if file['action'] in ('delete', 'purge', 'move/delete'):
-                self.gitStream.write("D %s\n" % relPath)
+                self.gitStream.write("D %s\n" % fileInfo['relPath'])
             else:
-                data = file['data']
-                del file['data']
-
-                mode = "644"
-                if isP4Exec(file["type"]):
-                    mode = "755"
-                elif file["type"] == "symlink":
-                    mode = "120000"
-                    # p4 print on a symlink contains "target\n", so strip it off
-                    data = data[:-1]
-
-                if self.isWindows and file["type"].endswith("text"):
-                    data = data.replace("\r\n", "\n")
-
-                self.gitStream.write("M %s inline %s\n" % (mode, relPath))
-                self.gitStream.write("data %s\n" % len(data))
-                self.gitStream.write(data)
+                self.gitStream.write("M %s inline %s\n" % (fileInfo['mode'], fileInfo['relPath']))
+                self.gitStream.write("data %s\n" % len(fileInfo['data']))
+                self.gitStream.write(fileInfo['data'])
                 self.gitStream.write("\n")
 
         for f in new_files:
@@ -1755,7 +1795,7 @@ class P4Sync(Command):
 
                         self.commit(description, filesForCommit, branch, [branchPrefix], parent)
                 else:
-                    files = self.extractFilesFromCommit(description)
+                    files = self.extractFilesFromCommit(description, self.depotPaths)
                     self.commit(description, files, self.branch, self.depotPaths,
                                 self.initialParent)
                     self.initialParent = ""
@@ -1809,7 +1849,7 @@ class P4Sync(Command):
         details["change"] = newestRevision
         self.updateOptionDict(details)
         #try:
-        self.commit(details, self.extractFilesFromCommit(details), self.branch, self.depotPaths)
+        self.commit(details, self.extractFilesFromCommit(details, self.depotPaths), self.branch, self.depotPaths)
         #except IOError:
         #   print "IO error with git fast-import. Is your git version recent enough?"
         #    print self.gitError.read()
