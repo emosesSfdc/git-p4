@@ -11,4 +11,6 @@ The following options can be set in the config file:
 	git-p4.allowSubmit
 	git-p4.syncFromOrigin
 	git-p4.useclientspec
+    git-p4.skipPlusW - set all files marked text+w in p4 to skip-worktree
+    git-p4.changelistOnly - create a change in p4 but don't submit on git p4 submit
 	
