@@ -331,22 +331,16 @@ def p4Where(depotPath):
     outputList = p4CmdList("where %s" % depotPath)
     output = None
     for entry in outputList:
-        print repr(entry)
-        print "depotPath:" + depotPath
         if "depotFile" in entry:
             if entry["depotFile"] == depotPath:
                 output = entry
-                print "found1"
                 break
         elif "data" in entry:
             data = entry.get("data")
             space = data.find(" ")
             if data[:space] == depotPath:
                 output = entry
-                print "found2"
                 break
-        else:
-            print "not found"
     if output == None:
         return ""
     if output["code"] == "error":
@@ -1244,9 +1238,11 @@ class P4Sync(Command):
             file["type"] = commit["type%s" % fnum]
 
             #if you find a .p4ignore, pretend it wasn't found, because
-            #we're going to read it in separately here
-            if file["path"].endswith("/.p4ignore") \
-                    and file['action'] not in ('delete', 'purge', 'move/delete'):
+            #we're going to read it in separately here. Also anything in the .git dir,
+            #which will overwrite the file from the git init
+            if file['action'] not in ('delete', 'purge', 'move/delete') and \
+                    (file["path"].endswith("/.p4ignore")  or \
+                     self.stripRepoPath(file['path'], branchPrefixes).startswith(".git/")):
                 preCommitFiles.append(file)
             else:
                 files.append(file)
@@ -1267,7 +1263,8 @@ class P4Sync(Command):
             f.close()
             os.chmod(fileInfo['relPath'], int(fileInfo['mode'], 8))
 
-            if not os.path.exists(os.path.join(dirname, ".gitignore")):
+            if fileInfo['relPath'].endswith('.p4ignore') and \
+                     not os.path.exists(os.path.join(dirname, ".gitignore")):
                 cwd = os.getcwd()
                 #symlink all p4ignores to gitignore
                 os.chdir(dirname)
