@@ -1184,7 +1184,8 @@ class P4Sync(Command):
                 # work but this makes the initial initialization much more
                 # effeicient
                 optparse.make_option("--p4Client", dest="p4Client",
-                                     help="Only sync files that are included in this client, prevents issue with SFDC")
+                                     help="Only sync files that are included in this client, prevents issue with SFDC"),
+                optparse.make_option("--changelist", dest="changelist", help="Sync to this specific changelist")
         ]
         self.description = """Imports from Perforce into a git repository.\n
     example:
@@ -1213,6 +1214,7 @@ class P4Sync(Command):
         self.cloneExclude = []
         self.useClientSpec = False
         self.clientSpecDirs = []
+        self.changelist = ""
 
         if gitConfig("git-p4.syncFromOrigin") == "false":
             self.syncWithOrigin = False
@@ -1960,7 +1962,15 @@ class P4Sync(Command):
 
             if p4Change > 0:
                 self.depotPaths = sorted(self.previousDepotPaths)
-                self.changeRange = "@%s,#head" % p4Change
+                if self.changelist:
+                    if p4Change > int(self.changelist):
+                        print ("The passed in changelist %s should be greater than the current changelist %s" % (self.changelist, p4Change))
+                        sys.exit(1)
+
+                    # This doesn't really do anything atm, it's just there for consistency, the p4 changes command that gets run always goes against the head revision
+                    self.changeRange = "@%s,@%s" % (p4Change, self.changelist)
+                else:
+                    self.changeRange = "@%s,#head" % p4Change
                 if not self.detectBranches:
                     self.initialParent = parseRevision(self.branch)
                 if not self.silent and not self.detectBranches:
@@ -2072,6 +2082,11 @@ class P4Sync(Command):
                     print "No changes to import!"
                 return True
 
+            if self.changelist:
+                idx = changes.index(int(self.changelist))
+                # idx + 1 to include the specified changelist
+                changes = changes[:idx + 1]
+
             if not self.silent and not self.detectBranches:
                 print "Import destination: %s" % self.branch
 
@@ -2098,13 +2113,17 @@ class P4Sync(Command):
 class P4Rebase(Command):
     def __init__(self):
         Command.__init__(self)
-        self.options = [ ]
+        self.options = [
+                optparse.make_option("--changelist", dest="changelist", help="Sync to this specific changelist")
+        ]
         self.description = ("Fetches the latest revision from perforce and "
                             + "rebases the current work (branch) against it")
         self.verbose = False
+        self.changelist = ""
 
     def run(self, args):
         sync = P4Sync()
+        sync.changelist = self.changelist
         sync.run([])
 
         return self.rebase()
