@@ -1185,7 +1185,7 @@ class P4Sync(Command):
                 # effeicient
                 optparse.make_option("--p4Client", dest="p4Client",
                                      help="Only sync files that are included in this client, prevents issue with SFDC"),
-                optparse.make_option("--changelist", dest="changelist", help="Sync to this specific changelist")
+                optparse.make_option("-C", "--changelist", dest="changelist", help="Sync to this specific changelist")
         ]
         self.description = """Imports from Perforce into a git repository.\n
     example:
@@ -2114,7 +2114,7 @@ class P4Rebase(Command):
     def __init__(self):
         Command.__init__(self)
         self.options = [
-                optparse.make_option("--changelist", dest="changelist", help="Sync to this specific changelist")
+                optparse.make_option("-C", "--changelist", dest="changelist", help="Sync to this specific changelist")
         ]
         self.description = ("Fetches the latest revision from perforce and "
                             + "rebases the current work (branch) against it")
